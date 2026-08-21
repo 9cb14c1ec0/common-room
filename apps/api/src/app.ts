@@ -173,11 +173,11 @@ export async function buildApp() {
     if (!database) return { requests };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query(`SELECT r.id,r.sender_id,r.recipient_id,r.message,r.status,r.created_at,
+    const result = await database.query(`SELECT r.id,r.sender_id,r.recipient_id,r.message,r.status,r.created_at,r.meeting_id,
       sender.display_name sender_name, recipient.display_name recipient_name
       FROM meeting_requests r JOIN users sender ON sender.id=r.sender_id JOIN users recipient ON recipient.id=r.recipient_id
       WHERE r.sender_id=$1 OR r.recipient_id=$1 ORDER BY r.created_at DESC`, [user.id]);
-    return { requests: result.rows.map((row) => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, senderName: row.sender_name, recipientName: row.recipient_name, message: row.message, status: row.status, createdAt: row.created_at, direction: row.sender_id === user.id ? "outgoing" : "incoming" })) };
+    return { requests: result.rows.map((row) => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, senderName: row.sender_name, recipientName: row.recipient_name, message: row.message, status: row.status, createdAt: row.created_at, meetingId: row.meeting_id, direction: row.sender_id === user.id ? "outgoing" : "incoming" })) };
   });
 
   app.post("/api/requests", async (request, reply) => {
@@ -212,11 +212,14 @@ export async function buildApp() {
     if (!row || row.status !== "pending") return reply.code(404).send({ error: "Pending request not found" });
     const allowed = input.status === "cancelled" ? row.sender_id === user.id : row.recipient_id === user.id;
     if (!allowed) return reply.code(403).send({ error: "You cannot respond to this request" });
-    await database.query("UPDATE meeting_requests SET status=$1,responded_at=now() WHERE id=$2", [input.status, request.params.requestId]);
-    if (input.status !== "accepted") return { status: input.status };
+    if (input.status !== "accepted") {
+      await database.query("UPDATE meeting_requests SET status=$1,responded_at=now() WHERE id=$2", [input.status, request.params.requestId]);
+      return { status: input.status };
+    }
     const roomName = `meeting-${request.params.requestId}`;
     const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,status,started_at) VALUES($1,'waiting',now()) RETURNING id", [roomName]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
+    await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
     return { status: input.status, meetingId: meeting.rows[0].id };
   });
 

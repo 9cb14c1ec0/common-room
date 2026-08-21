@@ -11,7 +11,7 @@ const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
 
 interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
-interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; direction: "incoming" | "outgoing" }
+interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; meetingId?: string; direction: "incoming" | "outgoing" }
 interface RoomMember { id: string; name: string; audioMuted: boolean; videoMuted: boolean }
 
 export function App() {
@@ -45,11 +45,38 @@ export function App() {
   const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
+  const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     if (inviteToken) void fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}`).then(async (response) => { if (!response.ok) throw new Error((await response.json()).error); setInvitation(await response.json()); }).catch((error) => setAuthError(error.message));
     void refreshSession();
   }, []);
+
+  useEffect(() => {
+    if (!auth?.user || inviteToken) return;
+    let active = true;
+    const refreshRealtime = async (announce: boolean) => {
+      try {
+        const options = { credentials: "include" as const };
+        const [peopleResponse, requestsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options)]);
+        if (!active) return;
+        if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
+        if (requestsResponse.ok) {
+          const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
+          if (announce) for (const item of nextRequests) {
+            const previous = knownRequestStatesRef.current.get(item.id);
+            if (!previous && item.direction === "incoming" && item.status === "pending") showToast(`${item.senderName} wants to meet`);
+            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") showToast(`${item.recipientName} accepted — join from Requests`);
+          }
+          knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
+          setRequests(nextRequests);
+        }
+      } catch { /* keep the current snapshot and retry */ }
+    };
+    void refreshRealtime(false);
+    const interval = window.setInterval(() => void refreshRealtime(true), 4000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [auth?.user?.id, inviteToken]);
 
   async function refreshSession() {
     try {
@@ -337,7 +364,7 @@ export function App() {
           {meetings.length ? meetings.map((meeting) => <div className="meeting" key={meeting.id}><div className="meeting-icon"><Clock3 size={19} /></div><div><strong>{meeting.title}</strong><small>{meeting.durationMinutes} min · {meeting.actionItemCount} action items</small></div></div>) : <p className="empty">Your completed meetings will appear here.</p>}
         </article>
       </section></>}
-      {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button>}</div></article>)}</section>}
+      {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <>{item.status === "accepted" && item.meetingId && <button className="accept" onClick={() => void enterRoom(item.meetingId)}><Video size={16}/> Join</button>}<button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button></>}</div></article>)}</section>}
       {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><p>{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} proposed action items</div></article>) : <div className="empty-state"><History size={28} /><h3>No meeting notes yet</h3></div>}</section>}
     </main>
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}
