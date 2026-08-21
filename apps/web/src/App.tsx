@@ -3,17 +3,16 @@ import { Video as SignalWireVideo } from "@signalwire/js";
 import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, Mic, MicOff, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
 import type { MeetingSummary, Person } from "@office/contracts";
 
-const fallbackPeople: Person[] = [
-  { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available" },
-  { id: "jon", name: "Jon Bell", initials: "JB", title: "Engineering", presence: "busy" },
-  { id: "priya", name: "Priya Shah", initials: "PS", title: "Design", presence: "available" },
-  { id: "theo", name: "Theo Martin", initials: "TM", title: "Operations", presence: "offline" }
-];
+const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
+  ? configuredApiUrl
+  : window.location.hostname === "common-room-web.onrender.com" ? "https://common-room-api.onrender.com" : "";
 
-const apiUrl = import.meta.env.VITE_API_URL ?? "";
+interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
+interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
 
 export function App() {
-  const [people, setPeople] = useState(fallbackPeople);
+  const [people, setPeople] = useState<Person[]>([]);
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [sentTo, setSentTo] = useState<string>();
   const [doorOpen, setDoorOpen] = useState(true);
@@ -26,11 +25,41 @@ export function App() {
   const signalWireRootRef = useRef<HTMLDivElement>(null);
   const roomSessionRef = useRef<InstanceType<typeof SignalWireVideo.RoomSession> | null>(null);
   const [roomMode, setRoomMode] = useState<"loading" | "signalwire" | "local">("loading");
+  const [auth, setAuth] = useState<AuthStatus>();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [authError, setAuthError] = useState<string>();
 
   useEffect(() => {
-    void fetch(`${apiUrl}/api/people`).then((r) => r.json()).then((data) => setPeople(data.people)).catch(() => undefined);
-    void fetch(`${apiUrl}/api/meetings`).then((r) => r.json()).then((data) => setMeetings(data.meetings)).catch(() => undefined);
+    void refreshSession();
   }, []);
+
+  async function refreshSession() {
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/status`, { credentials: "include" });
+      if (!response.ok) throw new Error("API unavailable");
+      const status: AuthStatus = await response.json();
+      setAuth(status);
+      if (status.user) await loadOfficeData();
+    } catch { setAuthError("The Common Room API is unavailable. Check the web service API URL."); }
+  }
+
+  async function loadOfficeData() {
+    const options = { credentials: "include" as const };
+    const [peopleResponse, meetingsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/meetings`, options)]);
+    if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
+    if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
+  }
+
+  async function submitAuth(event: React.FormEvent) {
+    event.preventDefault();
+    setAuthError(undefined);
+    const setup = auth?.requiresSetup;
+    const response = await fetch(`${apiUrl}/api/auth/${setup ? "setup" : "login"}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password, displayName }) });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); setAuthError(body.error ?? "Unable to sign in"); return; }
+    await refreshSession();
+  }
 
   async function invite(person: Person) {
     setSentTo(person.id);
@@ -38,7 +67,8 @@ export function App() {
     showToast(`Meeting request sent to ${person.name}`);
     await fetch(`${apiUrl}/api/requests`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fromId: "maya", toId: person.id, message: "Meet me in the Common Room?" })
+      credentials: "include",
+      body: JSON.stringify({ fromId: auth?.user?.id ?? "", toId: person.id, message: "Meet me in the Common Room?" })
     }).catch(() => undefined);
     window.setTimeout(() => setSentTo(undefined), 1800);
   }
@@ -53,7 +83,7 @@ export function App() {
     setRoomMode("loading");
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     try {
-      const response = await fetch(`${apiUrl}/api/meetings/main/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: "Maya Chen" }) });
+      const response = await fetch(`${apiUrl}/api/meetings/main/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
       if (!response.ok) throw new Error("SignalWire token unavailable");
       const { token } = await response.json();
       if (!signalWireRootRef.current) throw new Error("Room view unavailable");
@@ -106,6 +136,8 @@ export function App() {
     setCameraOn(next);
   }
 
+  if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
+
   if (view === "room") return <div className="room-screen">
     <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "signalwire" ? "Connected through SignalWire" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "signalwire" ? "Live" : "Preview"}</span></div>
     <div className="video-stage"><div ref={signalWireRootRef} className={roomMode === "signalwire" ? "signalwire-root" : "signalwire-root hidden"} />{roomMode !== "signalwire" && (cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">MC</div><span>Camera is off</span></div>)}</div>
@@ -124,7 +156,7 @@ export function App() {
         <button className={view === "requests" ? "active" : ""} onClick={() => setView("requests")}><Bell size={18} /> Requests {outgoing.length > 0 && <span className="badge">{outgoing.length}</span>}</button>
         <button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}><History size={18} /> Meeting notes</button>
       </nav>
-      <div className="profile"><div className="avatar cream">MC</div><div><strong>Maya Chen</strong><small><i className="dot available" /> Available</small></div></div>
+      <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div></div>
     </aside>
 
     <main>
@@ -137,10 +169,10 @@ export function App() {
 
       <section className="section-block">
         <div className="section-heading"><div><p className="eyebrow">THE TEAM</p><h3>Who’s around</h3></div><span>{people.filter((p) => p.presence === "available").length} available</span></div>
-        <div className="people-grid">{people.map((person, index) => <article className="person-card" key={person.id}>
+        <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
           <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
           <div className="person-info"><strong>{person.name}</strong><small>{person.title}</small></div>
-          <button disabled={person.presence !== "available" || person.id === "maya"} onClick={() => invite(person)}>
+          <button disabled={person.presence !== "available" || person.id === auth.user?.id} onClick={() => invite(person)}>
             {sentTo === person.id ? "Request sent" : person.presence === "available" ? "Ask to meet" : person.presence === "busy" ? "In a meeting" : "Away"}
           </button>
         </article>)}</div>

@@ -39,7 +39,7 @@ export async function buildApp() {
   }
   await app.register(cookie);
   await app.register(helmet);
-  await app.register(cors, { origin: process.env.WEB_ORIGIN ?? "http://localhost:5173", credentials: true });
+  await app.register(cors, { origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, ""), credentials: true });
   await app.register(websocket);
 
   app.addHook("onClose", async () => { await database?.end(); });
@@ -83,8 +83,19 @@ export async function buildApp() {
     const result = await database.query("SELECT id,display_name,title,presence FROM users ORDER BY display_name");
     return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence })) };
   });
-  app.get("/api/meetings", async () => ({ meetings }));
-  app.get("/api/requests", async () => ({ requests }));
+  app.get("/api/meetings", async (request, reply) => {
+    if (!database) return { meetings };
+    if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("SELECT id, coalesce(summary, 'Processing is not complete.') summary, started_at, ended_at FROM meetings ORDER BY created_at DESC LIMIT 30");
+    return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, actionItemCount: 0 })) };
+  });
+  app.get("/api/requests", async (request, reply) => {
+    if (!database) return { requests };
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("SELECT id,sender_id,recipient_id,message,status,created_at FROM meeting_requests WHERE sender_id=$1 OR recipient_id=$1 ORDER BY created_at DESC", [user.id]);
+    return { requests: result.rows };
+  });
 
   app.post("/api/requests", async (request, reply) => {
     const input = z.object({ fromId: z.string(), toId: z.string(), message: z.string().max(280).optional() }).parse(request.body);

@@ -2,6 +2,7 @@
 :root { font-family: "DM Sans", sans-serif; color: #18221f; background: #f1f0eb; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
+.auth-screen{min-height:100vh;display:grid;place-items:center;padding:24px;background:#dce7c7}.auth-card{width:min(430px,100%);background:#faf9f6;border:1px solid #d2d7ca;border-radius:22px;padding:38px;box-shadow:0 25px 70px #3d4c4430}.auth-card .brand-mark{margin-bottom:26px}.auth-card h1{margin-bottom:9px}.auth-card>p:not(.eyebrow){color:#6a756f;line-height:1.5;margin:0 0 25px}.auth-card label{display:grid;gap:7px;margin-top:14px;font-size:12px;font-weight:600;color:#4f5b55}.auth-card input{width:100%;border:1px solid #d4d5ce;border-radius:9px;background:white;padding:11px 12px;font:inherit;outline:none}.auth-card input:focus{border-color:#66805f;box-shadow:0 0 0 3px #dce7c7}.auth-card>button{width:100%;margin-top:22px;border:0;border-radius:10px;background:#17231f;color:white;padding:12px;cursor:pointer}.auth-error{margin-top:15px;padding:10px 12px;border-radius:8px;background:#f7dfdc;color:#8b342e;font-size:12px}
 button { font: inherit; }
 .shell { display: grid; grid-template-columns: 238px 1fr; min-height: 100vh; }
 aside { background: #17231f; color: #e9eee9; padding: 30px 22px 22px; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; }

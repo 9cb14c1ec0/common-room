@@ -6,7 +6,7 @@ services:
     staticPublishPath: apps/web/dist
     envVars:
       - key: VITE_API_URL
-        sync: false
+        value: https://common-room-api.onrender.com
     routes:
       - type: rewrite
         source: /*
@@ -24,6 +24,8 @@ services:
         value: "24"
       - key: NODE_ENV
         value: production
+      - key: WEB_ORIGIN
+        value: https://common-room-web.onrender.com
       - key: DATABASE_URL
         fromDatabase:
           name: common-room-db

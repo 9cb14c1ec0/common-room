@@ -28,7 +28,8 @@ export async function createSession(database: Database, userId: string, reply: F
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + 14 * 86_400_000);
   await database.query("INSERT INTO sessions(id_hash, user_id, expires_at) VALUES ($1, $2, $3)", [digest(token), userId, expiresAt]);
-  reply.setCookie(COOKIE, token, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", expires: expiresAt });
+  const production = process.env.NODE_ENV === "production";
+  reply.setCookie(COOKIE, token, { httpOnly: true, secure: production, sameSite: production ? "none" : "lax", path: "/", expires: expiresAt });
 }
 
 export async function currentUser(database: Database, request: FastifyRequest): Promise<AuthUser | undefined> {
