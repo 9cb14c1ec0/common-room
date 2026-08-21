@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, Mic, MicOff, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
 import type { MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
@@ -185,12 +186,13 @@ export function App() {
           const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
           const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
           cameraTrackRef.current = camera;
-          setCameraOn(true);
-          await new Promise((resolve) => window.setTimeout(resolve, 0));
-          if (agoraVideoRef.current) camera.play(agoraVideoRef.current, { fit: "cover", mirror: true });
+          flushSync(() => setCameraOn(true));
+          if (!agoraVideoRef.current) throw new Error("Local camera container was not mounted");
+          camera.play(agoraVideoRef.current, { fit: "cover", mirror: true });
           await agoraClientRef.current.publish(camera);
           setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: false } : member));
-        } catch {
+        } catch (error) {
+          console.error("Unable to start Agora camera", error);
           cameraTrackRef.current?.close();
           cameraTrackRef.current = null;
           setCameraOn(false);
