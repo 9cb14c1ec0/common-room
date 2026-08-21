@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@500;600;700&display=swap');
+:root { font-family: "DM Sans", sans-serif; color: #18221f; background: #f1f0eb; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button { font: inherit; }
+.shell { display: grid; grid-template-columns: 238px 1fr; min-height: 100vh; }
+aside { background: #17231f; color: #e9eee9; padding: 30px 22px 22px; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; }
+.brand { display: flex; gap: 11px; align-items: center; font: 600 17px Manrope; padding: 0 8px 31px; }
+.brand-mark { display: grid; place-items: center; width: 33px; height: 33px; color: #17231f; background: #d9e6bb; border-radius: 9px; }
+nav { display: grid; gap: 5px; }
+nav button { position: relative; display: flex; align-items: center; gap: 12px; padding: 11px 12px; border: 0; border-radius: 9px; color: #9ba8a2; background: transparent; cursor: pointer; text-align: left; }
+nav button.active { color: #f5f7f4; background: #273630; }
+.badge { margin-left: auto; border-radius: 99px; background: #d9e6bb; color: #17231f; padding: 1px 7px; font-size: 11px; }
+.profile { margin-top: auto; padding: 16px 8px 2px; border-top: 1px solid #314039; display: flex; gap: 10px; align-items: center; }
+.profile strong, .profile small { display: block; font-size: 13px; }
+.profile small { color: #9ba8a2; margin-top: 3px; }
+.avatar { width: 46px; height: 46px; flex: 0 0 auto; border-radius: 15px; display: grid; place-items: center; position: relative; font: 600 13px Manrope; color: #27302c; }
+.avatar.cream { width: 38px; height: 38px; border-radius: 12px; background: #d8c9ae; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+.available { background: #79a76b; }.busy { background: #d79b5c; }.offline { background: #a4aaa6; }.do_not_disturb { background: #ca6860; }
+main { padding: 38px clamp(28px, 5vw, 72px) 70px; max-width: 1440px; width: 100%; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 26px; }
+h1,h2,h3 { font-family: Manrope, sans-serif; margin: 0; letter-spacing: -.035em; }
+h1 { font-size: 32px; } h2 { font-size: clamp(32px, 4vw, 52px); margin: 20px 0 9px; max-width: 560px; } h3 { font-size: 21px; }
+.eyebrow { color: #758079; font-size: 10px; letter-spacing: .16em; font-weight: 600; margin: 0 0 7px; }
+.icon-button, .notes-card button { border: 1px solid #d4d4cc; background: #faf9f6; border-radius: 10px; width: 42px; height: 42px; display: grid; place-items: center; color: #4b5852; }
+.hero { min-height: 276px; padding: 45px 48px; border-radius: 24px; background: #dce7c7; display: flex; justify-content: space-between; align-items: end; overflow: hidden; position: relative; }
+.hero:after { content:""; position:absolute; width:270px; height:270px; border:60px solid rgba(255,255,255,.22); border-radius:50%; right:-85px; top:-115px; }
+.hero p { margin: 0; color: #536056; font-size: 16px; }
+.room-label { font-size: 11px; font-weight: 600; letter-spacing: .1em; }
+.close-door { z-index: 1; display: flex; gap: 9px; align-items: center; white-space: nowrap; background: #17231f; color: white; border: 0; border-radius: 12px; padding: 13px 17px; }
+.section-block { margin-top: 42px; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 17px; }
+.section-heading > span { color: #7a837e; font-size: 13px; }
+.people-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.person-card { background: #faf9f6; border: 1px solid #deddd6; border-radius: 17px; padding: 18px; min-width: 0; }
+.tone-0 { background:#d8c9ae }.tone-1 { background:#bbcbd1 }.tone-2 { background:#c8bdd2 }.tone-3 { background:#c7d2bd }
+.presence-ring { position: absolute; right: -2px; bottom: -2px; width: 13px; height: 13px; border: 3px solid #faf9f6; border-radius: 50%; }
+.person-info { margin: 14px 0; }.person-info strong,.person-info small { display:block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.person-info small { color:#78817c; margin-top:3px; font-size:12px; }
+.person-card button { width: 100%; border: 1px solid #d3d3cb; border-radius: 9px; background: transparent; padding: 8px; color: #34423c; font-size: 12px; cursor:pointer; }.person-card button:disabled { color:#9da39f; cursor:default; }
+.lower-grid { display:grid; grid-template-columns: 1.35fr 1fr; gap:16px; margin-top:42px; }
+.common-card,.notes-card { border:1px solid #deddd6; background:#faf9f6; border-radius:20px; overflow:hidden; }
+.common-card { display:grid; grid-template-columns: 42% 58%; min-height:245px; }.common-visual { background:#bdcabc; display:grid; place-items:center; overflow:hidden; }.table { width:150px; height:64px; border-radius:50%; background:#384943; position:relative; box-shadow:0 18px 30px #62776c66; }.table span { position:absolute; width:35px; height:35px; border-radius:50%; background:#dfe4db; border:5px solid #8c9e92; }.table span:nth-child(1){left:8px;top:-26px}.table span:nth-child(2){right:8px;top:-26px}.table span:nth-child(3){left:58px;bottom:-26px}.common-copy { padding:33px; }.common-copy > p:not(.eyebrow) { color:#69736d; line-height:1.55; font-size:14px; }.features { display:flex; gap:15px; flex-wrap:wrap; margin-top:25px; }.features span { display:flex; align-items:center; gap:6px; font-size:11px; color:#59655f; }
+.notes-card { padding:28px; }.meeting { display:flex; align-items:center; gap:13px; border-top:1px solid #e1e0da; padding-top:18px; margin-top:10px; }.meeting-icon { width:40px;height:40px;border-radius:11px;background:#e5eadc;display:grid;place-items:center;color:#53634f}.meeting strong,.meeting small{display:block;font-size:13px}.meeting small,.empty{color:#848b87;margin-top:4px;font-size:12px}
+@media (max-width: 900px) { .people-grid{grid-template-columns:repeat(2,1fr)} .lower-grid{grid-template-columns:1fr} }
+@media (max-width: 650px) { .shell{display:block} aside{height:auto;position:static;padding:16px}.brand{padding-bottom:15px} nav{grid-template-columns:repeat(3,1fr)}nav button{justify-content:center;font-size:0}.profile{display:none}main{padding:25px 16px}.hero{padding:30px 26px;display:block}.close-door{margin-top:28px}.people-grid{grid-template-columns:1fr 1fr}.common-card{grid-template-columns:1fr}.common-visual{min-height:150px} }
