@@ -42,7 +42,11 @@ export async function buildApp() {
   }
   await app.register(cookie);
   await app.register(helmet);
-  await app.register(cors, { origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, ""), credentials: true });
+  await app.register(cors, {
+    origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, ""),
+    credentials: true,
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"]
+  });
   await app.register(websocket);
 
   app.addHook("onClose", async () => { await database?.end(); });
