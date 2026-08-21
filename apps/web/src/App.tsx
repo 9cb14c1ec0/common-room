@@ -96,7 +96,11 @@ export function App() {
     setView("room");
     setRoomMode("loading");
     await new Promise((resolve) => window.setTimeout(resolve, 0));
+    let permissionPrimer: MediaStream | undefined;
     try {
+      // SignalWire creates a device watcher during room setup. Prime browser
+      // permission first so enumeration does not race getUserMedia().
+      permissionPrimer = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
       if (!response.ok) throw new Error("SignalWire token unavailable");
       const { token } = await response.json();
@@ -105,8 +109,11 @@ export function App() {
       const session = new SignalWireVideo.RoomSession({ token, rootElement: signalWireRootRef.current });
       roomSessionRef.current = session;
       await session.join({ audio: true, video: false });
+      permissionPrimer.getTracks().forEach((track) => track.stop());
+      permissionPrimer = undefined;
       setRoomMode("signalwire");
     } catch {
+      permissionPrimer?.getTracks().forEach((track) => track.stop());
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         localMediaRef.current = stream;
@@ -149,8 +156,16 @@ export function App() {
     const next = !cameraOn;
     if (roomMode === "signalwire" && roomSessionRef.current) {
       if (next) {
+        let permissionStream: MediaStream | undefined;
         try {
-          const camera = await roomSessionRef.current.addCamera({ autoJoin: false, width: { ideal: 1280 }, height: { ideal: 720 } });
+          // Explicitly request camera permission before SignalWire enumerates
+          // devices, then direct it to the camera the browser selected.
+          permissionStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+          const selectedDeviceId = permissionStream.getVideoTracks()[0]?.getSettings().deviceId;
+          setCameraOn(true);
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+          if (videoRef.current) { videoRef.current.srcObject = permissionStream; await videoRef.current.play(); }
+          const camera = await roomSessionRef.current.addCamera({ autoJoin: false, ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}), width: { ideal: 1280 }, height: { ideal: 720 } });
           await camera.join();
           let stream = camera.localStream;
           for (let attempt = 0; !stream && !camera.localVideoTrack && attempt < 40; attempt += 1) {
@@ -163,13 +178,13 @@ export function App() {
             throw new Error("SignalWire did not provide a live camera track");
           }
           cameraDeviceRef.current = camera;
-          setCameraOn(true);
-          await new Promise((resolve) => window.setTimeout(resolve, 0));
+          permissionStream.getTracks().forEach((track) => track.stop());
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             await videoRef.current.play();
           }
         } catch {
+          permissionStream?.getTracks().forEach((track) => track.stop());
           cameraDeviceRef.current = null;
           setCameraOn(false);
           showToast("The camera could not be started. Check browser permissions.");
