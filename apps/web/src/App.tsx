@@ -12,6 +12,7 @@ interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user:
 interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; direction: "incoming" | "outgoing" }
 interface CameraDevice { localStream?: MediaStream; localVideoTrack?: MediaStreamTrack | null; join(): Promise<void>; leave(): Promise<void> }
 interface RoomSessionControls { join(options: { audio: boolean; video: boolean }): Promise<unknown>; leave(): Promise<void>; audioMute(): Promise<unknown>; audioUnmute(): Promise<unknown>; addCamera(options?: MediaTrackConstraints & { autoJoin?: boolean }): Promise<CameraDevice> }
+interface RoomMember { id: string; name: string; audioMuted: boolean; videoMuted: boolean }
 
 export function App() {
   const [people, setPeople] = useState<Person[]>([]);
@@ -40,6 +41,7 @@ export function App() {
   const inviteToken = new URLSearchParams(window.location.search).get("invite");
   const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
+  const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
 
   useEffect(() => {
     if (inviteToken) void fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}`).then(async (response) => { if (!response.ok) throw new Error((await response.json()).error); setInvitation(await response.json()); }).catch((error) => setAuthError(error.message));
@@ -107,6 +109,24 @@ export function App() {
       if (!signalWireRootRef.current) throw new Error("Room view unavailable");
       const { Video: SignalWireVideo } = await import("@signalwire/js");
       const session = new SignalWireVideo.RoomSession({ token, rootElement: signalWireRootRef.current });
+      const memberFromEvent = (value: unknown): RoomMember | undefined => {
+        const wrapper = value as { member?: Record<string, unknown> };
+        const member = (wrapper.member ?? value) as Record<string, unknown>;
+        const id = String(member.id ?? member.member_id ?? "");
+        if (!id) return undefined;
+        return { id, name: String(member.name ?? member.user_name ?? "Participant"), audioMuted: Boolean(member.audio_muted), videoMuted: member.video_muted === undefined ? true : Boolean(member.video_muted) };
+      };
+      const upsertMember = (value: unknown) => {
+        const member = memberFromEvent(value); if (!member) return;
+        setRoomMembers((current) => [...current.filter((item) => item.id !== member.id), member]);
+      };
+      session.on("room.joined", (event) => {
+        const members = ((event as { room_session?: { members?: unknown[] } }).room_session?.members ?? []).map(memberFromEvent).filter((member): member is RoomMember => Boolean(member));
+        setRoomMembers(members);
+      });
+      session.on("member.joined", upsertMember);
+      session.on("member.updated", upsertMember);
+      session.on("member.left", (event) => { const member = memberFromEvent(event); if (member) setRoomMembers((current) => current.filter((item) => item.id !== member.id)); });
       roomSessionRef.current = session;
       await session.join({ audio: true, video: false });
       permissionPrimer.getTracks().forEach((track) => track.stop());
@@ -137,6 +157,7 @@ export function App() {
     stream?.getTracks().forEach((track) => track.stop());
     localMediaRef.current?.getTracks().forEach((track) => track.stop());
     localMediaRef.current = null;
+    setRoomMembers([]);
     setCameraOn(false);
     setMicOn(true);
     setView("office");
@@ -241,7 +262,17 @@ export function App() {
 
   if (view === "room") return <div className="room-screen">
     <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "signalwire" ? "Connected through SignalWire" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "signalwire" ? "Live" : "Preview"}</span></div>
-    <div className="video-stage"><div ref={signalWireRootRef} className={roomMode === "signalwire" ? "signalwire-root" : "signalwire-root hidden"} />{roomMode === "signalwire" && cameraOn && <video className="local-camera-preview" ref={videoRef} autoPlay muted playsInline />}{roomMode !== "signalwire" && (cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><span>Camera is off</span></div>)}</div>
+    {(() => {
+      const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];
+      const hasRoomVideo = cameraOn || roomMembers.some((member) => !member.videoMuted);
+      return <div className={`video-stage ${hasRoomVideo ? "has-video" : "audio-only"}`}>
+        <div ref={signalWireRootRef} className={roomMode === "signalwire" && hasRoomVideo ? "signalwire-root" : "signalwire-root visually-hidden"} />
+        {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => <div className="audio-participant" key={member.id}><div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><strong>{member.name}</strong><span>{member.audioMuted ? <><MicOff size={13}/> Muted</> : <><Mic size={13}/> Listening</>}</span></div>)}</div>}
+        {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><span className={`mini-avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</span><small>{member.name}</small></div>)}</div>}
+        {roomMode === "signalwire" && cameraOn && <video className="local-camera-preview" ref={videoRef} autoPlay muted playsInline />}
+        {roomMode !== "signalwire" && cameraOn && <video ref={videoRef} autoPlay muted playsInline />}
+      </div>;
+    })()}
     <div className="call-controls">
       <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()}>{micOn ? <Mic /> : <MicOff />}</button>
       <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()}>{cameraOn ? <Video /> : <VideoOff />}</button>
