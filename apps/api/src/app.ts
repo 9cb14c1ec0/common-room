@@ -68,12 +68,17 @@ export async function buildApp() {
     const result = await database.query("SELECT id,password_hash FROM users WHERE email=$1", [input.email.toLowerCase()]);
     const row = result.rows[0];
     if (!row || !await verifyPassword(input.password, row.password_hash)) return reply.code(401).send({ error: "Invalid email or password" });
+    await database.query("UPDATE users SET presence='available' WHERE id=$1", [row.id]);
     await createSession(database, row.id, reply);
     return { ok: true };
   });
 
   app.post("/api/auth/logout", async (request, reply) => {
-    if (database) await destroySession(database, request, reply);
+    if (database) {
+      const user = await currentUser(database, request);
+      if (user) await database.query("UPDATE users SET presence='offline' WHERE id=$1", [user.id]);
+      await destroySession(database, request, reply);
+    }
     return { ok: true };
   });
 
@@ -82,6 +87,19 @@ export async function buildApp() {
     if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
     const result = await database.query("SELECT id,display_name,title,presence FROM users ORDER BY display_name");
     return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence })) };
+  });
+  app.post("/api/users", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    const input = z.object({ email: z.string().email(), displayName: z.string().min(2).max(80), title: z.string().max(80).default(""), temporaryPassword: z.string().min(10) }).parse(request.body);
+    try {
+      const result = await database.query("INSERT INTO users(email,password_hash,display_name,title,presence,is_admin) VALUES($1,$2,$3,$4,'offline',false) RETURNING id", [input.email.toLowerCase(), await hashPassword(input.temporaryPassword), input.displayName, input.title]);
+      return reply.code(201).send({ id: result.rows[0].id });
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") return reply.code(409).send({ error: "An account with that email already exists" });
+      throw error;
+    }
   });
   app.get("/api/meetings", async (request, reply) => {
     if (!database) return { meetings };
@@ -93,8 +111,11 @@ export async function buildApp() {
     if (!database) return { requests };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query("SELECT id,sender_id,recipient_id,message,status,created_at FROM meeting_requests WHERE sender_id=$1 OR recipient_id=$1 ORDER BY created_at DESC", [user.id]);
-    return { requests: result.rows };
+    const result = await database.query(`SELECT r.id,r.sender_id,r.recipient_id,r.message,r.status,r.created_at,
+      sender.display_name sender_name, recipient.display_name recipient_name
+      FROM meeting_requests r JOIN users sender ON sender.id=r.sender_id JOIN users recipient ON recipient.id=r.recipient_id
+      WHERE r.sender_id=$1 OR r.recipient_id=$1 ORDER BY r.created_at DESC`, [user.id]);
+    return { requests: result.rows.map((row) => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, senderName: row.sender_name, recipientName: row.recipient_name, message: row.message, status: row.status, createdAt: row.created_at, direction: row.sender_id === user.id ? "outgoing" : "incoming" })) };
   });
 
   app.post("/api/requests", async (request, reply) => {
@@ -114,6 +135,24 @@ export async function buildApp() {
     };
     requests.push(meetingRequest);
     return reply.code(201).send({ request: meetingRequest });
+  });
+
+  app.patch<{ Params: { requestId: string } }>("/api/requests/:requestId", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const input = z.object({ status: z.enum(["accepted", "declined", "cancelled"]) }).parse(request.body);
+    const existing = await database.query("SELECT sender_id,recipient_id,status FROM meeting_requests WHERE id=$1", [request.params.requestId]);
+    const row = existing.rows[0];
+    if (!row || row.status !== "pending") return reply.code(404).send({ error: "Pending request not found" });
+    const allowed = input.status === "cancelled" ? row.sender_id === user.id : row.recipient_id === user.id;
+    if (!allowed) return reply.code(403).send({ error: "You cannot respond to this request" });
+    await database.query("UPDATE meeting_requests SET status=$1,responded_at=now() WHERE id=$2", [input.status, request.params.requestId]);
+    if (input.status !== "accepted") return { status: input.status };
+    const roomName = `meeting-${request.params.requestId}`;
+    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,status,started_at) VALUES($1,'waiting',now()) RETURNING id", [roomName]);
+    await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
+    return { status: input.status, meetingId: meeting.rows[0].id };
   });
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/token", async (request, reply) => {
