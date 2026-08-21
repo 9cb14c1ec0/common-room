@@ -17,24 +17,26 @@ export function createDatabase(): Database | undefined {
 
 export async function migrate(database: Database) {
   await database.query("CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
-  const name = "001_initial";
-  const applied = await database.query("SELECT 1 FROM schema_migrations WHERE name = $1", [name]);
-  if (applied.rowCount) return;
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [path.resolve(here, "../../../db/schema.sql"), path.resolve(process.cwd(), "db/schema.sql")];
-  let sql: string | undefined;
-  for (const candidate of candidates) {
-    try { sql = await readFile(candidate, "utf8"); break; } catch { /* try next path */ }
+  const migrations = [{ name: "001_initial", file: "schema.sql" }, { name: "002_invitations", file: "002_invitations.sql" }];
+  for (const migration of migrations) {
+    const applied = await database.query("SELECT 1 FROM schema_migrations WHERE name = $1", [migration.name]);
+    if (applied.rowCount) continue;
+    const candidates = [path.resolve(here, `../../../db/${migration.file}`), path.resolve(process.cwd(), `db/${migration.file}`)];
+    let sql: string | undefined;
+    for (const candidate of candidates) {
+      try { sql = await readFile(candidate, "utf8"); break; } catch { /* try next path */ }
+    }
+    if (!sql) throw new Error(`Unable to locate db/${migration.file}`);
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(sql);
+      await client.query("INSERT INTO schema_migrations(name) VALUES ($1)", [migration.name]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
-  if (!sql) throw new Error("Unable to locate db/schema.sql");
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(sql);
-    await client.query("INSERT INTO schema_migrations(name) VALUES ($1)", [name]);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally { client.release(); }
 }

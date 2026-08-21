@@ -21,8 +21,9 @@ export function App() {
   const [requests, setRequests] = useState<RequestView[]>([]);
   const [toast, setToast] = useState<string>();
   const [micOn, setMicOn] = useState(true);
-  const [cameraOn, setCameraOn] = useState(true);
+  const [cameraOn, setCameraOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const localMediaRef = useRef<MediaStream | null>(null);
   const signalWireRootRef = useRef<HTMLDivElement>(null);
   const roomSessionRef = useRef<RoomSessionControls | null>(null);
   const [roomMode, setRoomMode] = useState<"loading" | "signalwire" | "local">("loading");
@@ -32,10 +33,14 @@ export function App() {
   const [displayName, setDisplayName] = useState("");
   const [authError, setAuthError] = useState<string>();
   const [addingPerson, setAddingPerson] = useState(false);
-  const [newPerson, setNewPerson] = useState({ displayName: "", email: "", title: "", temporaryPassword: "" });
+  const [newPerson, setNewPerson] = useState({ email: "", title: "" });
+  const [inviteUrl, setInviteUrl] = useState<string>();
+  const inviteToken = new URLSearchParams(window.location.search).get("invite");
+  const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
 
   useEffect(() => {
+    if (inviteToken) void fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}`).then(async (response) => { if (!response.ok) throw new Error((await response.json()).error); setInvitation(await response.json()); }).catch((error) => setAuthError(error.message));
     void refreshSession();
   }, []);
 
@@ -97,12 +102,12 @@ export function App() {
       const { Video: SignalWireVideo } = await import("@signalwire/js");
       const session = new SignalWireVideo.RoomSession({ token, rootElement: signalWireRootRef.current });
       roomSessionRef.current = session;
-      await session.join({ audio: true, video: true });
+      await session.join({ audio: true, video: false });
       setRoomMode("signalwire");
     } catch {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        localMediaRef.current = stream;
         setRoomMode("local");
         showToast("SignalWire was unavailable; showing a local device preview.");
       } catch {
@@ -119,6 +124,10 @@ export function App() {
     roomSessionRef.current = null;
     const stream = videoRef.current?.srcObject as MediaStream | null;
     stream?.getTracks().forEach((track) => track.stop());
+    localMediaRef.current?.getTracks().forEach((track) => track.stop());
+    localMediaRef.current = null;
+    setCameraOn(false);
+    setMicOn(true);
     setView("office");
   }
 
@@ -127,8 +136,7 @@ export function App() {
     if (roomMode === "signalwire" && roomSessionRef.current) {
       if (next) await roomSessionRef.current.audioUnmute(); else await roomSessionRef.current.audioMute();
     } else {
-      const stream = videoRef.current?.srcObject as MediaStream | null;
-      stream?.getAudioTracks().forEach((track) => track.enabled = next);
+      localMediaRef.current?.getAudioTracks().forEach((track) => track.enabled = next);
     }
     setMicOn(next);
   }
@@ -138,18 +146,35 @@ export function App() {
     if (roomMode === "signalwire" && roomSessionRef.current) {
       if (next) await roomSessionRef.current.videoUnmute(); else await roomSessionRef.current.videoMute();
     } else {
-      const stream = videoRef.current?.srcObject as MediaStream | null;
-      stream?.getVideoTracks().forEach((track) => track.enabled = next);
+      if (next && !localMediaRef.current?.getVideoTracks().length) {
+        const camera = await navigator.mediaDevices.getUserMedia({ video: true });
+        const stream = localMediaRef.current ?? new MediaStream();
+        camera.getVideoTracks().forEach((track) => stream.addTrack(track));
+        localMediaRef.current = stream;
+        setCameraOn(true);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        return;
+      }
+      localMediaRef.current?.getVideoTracks().forEach((track) => track.enabled = next);
+      if (next) { setCameraOn(true); await new Promise((resolve) => window.setTimeout(resolve, 0)); if (videoRef.current) videoRef.current.srcObject = localMediaRef.current; return; }
     }
     setCameraOn(next);
   }
 
-  async function addPerson(event: React.FormEvent) {
+  async function createInvite(event: React.FormEvent) {
     event.preventDefault();
-    const response = await fetch(`${apiUrl}/api/users`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify(newPerson) });
-    if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to add teammate"); return; }
-    setAddingPerson(false); setNewPerson({ displayName: "", email: "", title: "", temporaryPassword: "" });
-    showToast("Teammate account created"); await loadOfficeData();
+    const response = await fetch(`${apiUrl}/api/invitations`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify(newPerson) });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to create invitation"); return; }
+    const body = await response.json(); setInviteUrl(body.inviteUrl); showToast("Invite link created");
+  }
+
+  async function acceptInvite(event: React.FormEvent) {
+    event.preventDefault();
+    if (!inviteToken) return;
+    const response = await fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}/accept`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName, password }) });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); setAuthError(body.error ?? "Unable to accept invitation"); return; }
+    window.history.replaceState({}, "", "/"); setInvitation(undefined); await refreshSession();
   }
 
   async function respondToRequest(item: RequestView, status: "accepted" | "declined" | "cancelled") {
@@ -160,6 +185,8 @@ export function App() {
     if (status === "accepted" && body.meetingId) await enterRoom(body.meetingId);
     else showToast(status === "cancelled" ? "Request cancelled" : `Request ${status}`);
   }
+
+  if (inviteToken) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void acceptInvite(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">YOU’RE INVITED</p><h1>Join Common Room</h1>{invitation ? <><p>Create your account for <strong>{invitation.email}</strong>{invitation.title ? ` as ${invitation.title}` : ""}.</p><label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={10} autoComplete="new-password" /></label><button type="submit">Accept invitation</button></> : <p>{authError ?? "Checking your invitation…"}</p>}</form></div>;
 
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
 
@@ -194,7 +221,7 @@ export function App() {
 
       <section className="section-block">
         <div className="section-heading"><div><p className="eyebrow">THE TEAM</p><h3>Who’s around</h3></div><div className="heading-actions"><span>{people.filter((p) => p.presence === "available").length} available</span>{auth.user.isAdmin && <button onClick={() => setAddingPerson(!addingPerson)}>+ Add teammate</button>}</div></div>
-        {addingPerson && <form className="add-person" onSubmit={(event) => void addPerson(event)}><input placeholder="Full name" value={newPerson.displayName} onChange={(event) => setNewPerson({...newPerson,displayName:event.target.value})} required /><input type="email" placeholder="Email" value={newPerson.email} onChange={(event) => setNewPerson({...newPerson,email:event.target.value})} required /><input placeholder="Title" value={newPerson.title} onChange={(event) => setNewPerson({...newPerson,title:event.target.value})} /><input type="password" minLength={10} placeholder="Temporary password (10+ characters)" value={newPerson.temporaryPassword} onChange={(event) => setNewPerson({...newPerson,temporaryPassword:event.target.value})} required /><button type="submit">Create account</button></form>}
+        {addingPerson && <form className="add-person invite-form" onSubmit={(event) => void createInvite(event)}><input type="email" placeholder="Teammate email" value={newPerson.email} onChange={(event) => setNewPerson({...newPerson,email:event.target.value})} required /><input placeholder="Title (optional)" value={newPerson.title} onChange={(event) => setNewPerson({...newPerson,title:event.target.value})} /><button type="submit">Create invite link</button>{inviteUrl && <div className="invite-result"><input readOnly value={inviteUrl} /><button type="button" onClick={() => { void navigator.clipboard.writeText(inviteUrl); showToast("Invite link copied"); }}>Copy link</button></div>}</form>}
         <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
           <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
           <div className="person-info"><strong>{person.name}</strong><small>{person.title}</small></div>

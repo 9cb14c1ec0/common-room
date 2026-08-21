@@ -65,7 +65,19 @@ CREATE TABLE sessions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE invitations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email text NOT NULL,
+  title text NOT NULL DEFAULT '',
+  token_hash text NOT NULL UNIQUE,
+  created_by uuid NOT NULL REFERENCES users(id),
+  expires_at timestamptz NOT NULL,
+  accepted_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX meeting_requests_recipient_idx ON meeting_requests(recipient_id, status, created_at DESC);
 CREATE INDEX meetings_created_idx ON meetings(created_at DESC);
 CREATE INDEX action_items_assignee_idx ON action_items(assignee_id, status);
 CREATE INDEX sessions_user_idx ON sessions(user_id, expires_at);
+CREATE INDEX invitations_email_idx ON invitations(email, expires_at DESC);

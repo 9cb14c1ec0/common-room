@@ -4,6 +4,7 @@ import helmet from "@fastify/helmet";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { z } from "zod";
+import { createHash, randomBytes } from "node:crypto";
 import type { MeetingRequest, MeetingSummary, Person } from "@office/contracts";
 import { createSession, currentUser, destroySession, hashPassword, verifyPassword } from "./auth.js";
 import { createDatabase, migrate } from "./database.js";
@@ -26,6 +27,7 @@ const meetings: MeetingSummary[] = [{
 }];
 
 const requests: MeetingRequest[] = [];
+const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
@@ -100,6 +102,49 @@ export async function buildApp() {
       if ((error as { code?: string }).code === "23505") return reply.code(409).send({ error: "An account with that email already exists" });
       throw error;
     }
+  });
+  app.post("/api/invitations", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    const input = z.object({ email: z.string().email(), title: z.string().max(80).default("") }).parse(request.body);
+    const existing = await database.query("SELECT 1 FROM users WHERE email=$1", [input.email.toLowerCase()]);
+    if (existing.rowCount) return reply.code(409).send({ error: "An account with that email already exists" });
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + 7 * 86_400_000);
+    await database.query("UPDATE invitations SET accepted_at=now() WHERE email=$1 AND accepted_at IS NULL", [input.email.toLowerCase()]);
+    await database.query("INSERT INTO invitations(email,title,token_hash,created_by,expires_at) VALUES($1,$2,$3,$4,$5)", [input.email.toLowerCase(), input.title, tokenHash(token), user.id, expiresAt]);
+    const webOrigin = (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, "");
+    return reply.code(201).send({ inviteUrl: `${webOrigin}/?invite=${encodeURIComponent(token)}`, expiresAt });
+  });
+
+  app.get<{ Params: { token: string } }>("/api/invitations/:token", async (request, reply) => {
+    if (!database) return reply.code(404).send({ error: "Invitation not found" });
+    const result = await database.query("SELECT email,title,expires_at FROM invitations WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at > now()", [tokenHash(request.params.token)]);
+    const invitation = result.rows[0];
+    if (!invitation) return reply.code(404).send({ error: "This invitation is invalid or has expired" });
+    return { email: invitation.email, title: invitation.title, expiresAt: invitation.expires_at };
+  });
+
+  app.post<{ Params: { token: string } }>("/api/invitations/:token/accept", async (request, reply) => {
+    if (!database) return reply.code(404).send({ error: "Invitation not found" });
+    const input = z.object({ displayName: z.string().min(2).max(80), password: z.string().min(10) }).parse(request.body);
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("SELECT id,email,title FROM invitations WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at > now() FOR UPDATE", [tokenHash(request.params.token)]);
+      const invitation = result.rows[0];
+      if (!invitation) { await client.query("ROLLBACK"); return reply.code(404).send({ error: "This invitation is invalid or has expired" }); }
+      const created = await client.query("INSERT INTO users(email,password_hash,display_name,title,presence,is_admin) VALUES($1,$2,$3,$4,'available',false) RETURNING id", [invitation.email, await hashPassword(input.password), input.displayName, invitation.title]);
+      await client.query("UPDATE invitations SET accepted_at=now() WHERE id=$1", [invitation.id]);
+      await client.query("COMMIT");
+      await createSession(database, created.rows[0].id, reply);
+      return reply.code(201).send({ ok: true });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      if ((error as { code?: string }).code === "23505") return reply.code(409).send({ error: "An account with this email already exists" });
+      throw error;
+    } finally { client.release(); }
   });
   app.get("/api/meetings", async (request, reply) => {
     if (!database) return { meetings };
