@@ -3,6 +3,7 @@ import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
+import AgoraToken from "agora-token";
 import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
 import type { MeetingRequest, MeetingSummary, Person } from "@office/contracts";
@@ -202,24 +203,18 @@ export async function buildApp() {
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/token", async (request, reply) => {
     const input = z.object({ displayName: z.string().min(1).max(80).optional() }).parse(request.body ?? {});
-    const spaceUrl = process.env.SIGNALWIRE_SPACE_URL?.replace(/\/$/, "");
-    if (!spaceUrl || !process.env.SIGNALWIRE_PROJECT_ID || !process.env.SIGNALWIRE_API_TOKEN) {
-      return reply.code(503).send({ error: "SignalWire is not configured", code: "INTEGRATION_NOT_CONFIGURED" });
+    const appId = process.env.AGORA_APP_ID;
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE;
+    if (!appId || !appCertificate) {
+      return reply.code(503).send({ error: "Agora is not configured", code: "INTEGRATION_NOT_CONFIGURED" });
     }
     const authenticated = database ? await currentUser(database, request) : undefined;
-    const roomName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 120);
-    const credentials = Buffer.from(`${process.env.SIGNALWIRE_PROJECT_ID}:${process.env.SIGNALWIRE_API_TOKEN}`).toString("base64");
-    const signalWireResponse = await fetch(`${spaceUrl}/api/video/room_tokens`, {
-      method: "POST",
-      headers: { authorization: `Basic ${credentials}`, "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ room_name: roomName, user_name: authenticated?.displayName ?? input.displayName ?? "Guest" })
-    });
-    const payload = await signalWireResponse.json() as { token?: string; message?: string; errors?: unknown };
-    if (!signalWireResponse.ok || !payload.token) {
-      request.log.error({ status: signalWireResponse.status, payload }, "SignalWire room token request failed");
-      return reply.code(502).send({ error: "Unable to create a SignalWire room token", code: "SIGNALWIRE_TOKEN_FAILED" });
-    }
-    return { token: payload.token, roomName };
+    if (database && !authenticated) return reply.code(401).send({ error: "Authentication required" });
+    const channelName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 63);
+    const uid = authenticated?.id ?? `guest-${randomBytes(12).toString("hex")}`;
+    const expiresInSeconds = 60 * 60;
+    const token = AgoraToken.RtcTokenBuilder.buildTokenWithUserAccount(appId, appCertificate, channelName, uid, AgoraToken.RtcRole.PUBLISHER, expiresInSeconds, expiresInSeconds);
+    return { appId, token, channelName, uid, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
   });
 
   app.get("/api/presence", { websocket: true }, (socket) => {

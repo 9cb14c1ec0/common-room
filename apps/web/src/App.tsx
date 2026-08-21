@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, Mic, MicOff, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
 import type { MeetingSummary, Person } from "@office/contracts";
+import type { IAgoraRTCClient, ICameraVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
 const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
@@ -10,8 +11,6 @@ const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
 interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
 interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; direction: "incoming" | "outgoing" }
-interface CameraDevice { localStream?: MediaStream; localVideoTrack?: MediaStreamTrack | null; join(): Promise<void>; leave(): Promise<void> }
-interface RoomSessionControls { join(options: { audio: boolean; video: boolean }): Promise<unknown>; leave(): Promise<void>; audioMute(): Promise<unknown>; audioUnmute(): Promise<unknown>; addCamera(options?: MediaTrackConstraints & { autoJoin?: boolean }): Promise<CameraDevice> }
 interface RoomMember { id: string; name: string; audioMuted: boolean; videoMuted: boolean }
 
 export function App() {
@@ -25,11 +24,13 @@ export function App() {
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const agoraVideoRef = useRef<HTMLDivElement>(null);
   const localMediaRef = useRef<MediaStream | null>(null);
-  const signalWireRootRef = useRef<HTMLDivElement>(null);
-  const roomSessionRef = useRef<RoomSessionControls | null>(null);
-  const cameraDeviceRef = useRef<CameraDevice | null>(null);
-  const [roomMode, setRoomMode] = useState<"loading" | "signalwire" | "local">("loading");
+  const agoraClientRef = useRef<IAgoraRTCClient | null>(null);
+  const roomUidRef = useRef<string | null>(null);
+  const microphoneTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
+  const cameraTrackRef = useRef<ICameraVideoTrack | null>(null);
+  const [roomMode, setRoomMode] = useState<"loading" | "agora" | "local">("loading");
   const [auth, setAuth] = useState<AuthStatus>();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -98,47 +99,45 @@ export function App() {
     setView("room");
     setRoomMode("loading");
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-    let permissionPrimer: MediaStream | undefined;
     try {
-      // SignalWire creates a device watcher during room setup. Prime browser
-      // permission first so enumeration does not race getUserMedia().
-      permissionPrimer = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
-      if (!response.ok) throw new Error("SignalWire token unavailable");
-      const { token } = await response.json();
-      if (!signalWireRootRef.current) throw new Error("Room view unavailable");
-      const { Video: SignalWireVideo } = await import("@signalwire/js");
-      const session = new SignalWireVideo.RoomSession({ token, rootElement: signalWireRootRef.current });
-      const memberFromEvent = (value: unknown): RoomMember | undefined => {
-        const wrapper = value as { member?: Record<string, unknown> };
-        const member = (wrapper.member ?? value) as Record<string, unknown>;
-        const id = String(member.id ?? member.member_id ?? "");
-        if (!id) return undefined;
-        return { id, name: String(member.name ?? member.user_name ?? "Participant"), audioMuted: Boolean(member.audio_muted), videoMuted: member.video_muted === undefined ? true : Boolean(member.video_muted) };
-      };
-      const upsertMember = (value: unknown) => {
-        const member = memberFromEvent(value); if (!member) return;
-        setRoomMembers((current) => [...current.filter((item) => item.id !== member.id), member]);
-      };
-      session.on("room.joined", (event) => {
-        const members = ((event as { room_session?: { members?: unknown[] } }).room_session?.members ?? []).map(memberFromEvent).filter((member): member is RoomMember => Boolean(member));
-        setRoomMembers(members);
+      if (!response.ok) throw new Error("Agora token unavailable");
+      const { appId, token, channelName, uid, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; displayName: string };
+      const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+      const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      const memberName = (id: string) => people.find((person) => person.id === id)?.name ?? "Participant";
+      const updateMember = (id: string, changes: Partial<RoomMember>) => setRoomMembers((current) => {
+        const existing = current.find((member) => member.id === id);
+        return [...current.filter((member) => member.id !== id), { id, name: existing?.name ?? memberName(id), audioMuted: existing?.audioMuted ?? true, videoMuted: existing?.videoMuted ?? true, ...changes }];
       });
-      session.on("member.joined", upsertMember);
-      session.on("member.updated", upsertMember);
-      session.on("member.left", (event) => { const member = memberFromEvent(event); if (member) setRoomMembers((current) => current.filter((item) => item.id !== member.id)); });
-      roomSessionRef.current = session;
-      await session.join({ audio: true, video: false });
-      permissionPrimer.getTracks().forEach((track) => track.stop());
-      permissionPrimer = undefined;
-      setRoomMode("signalwire");
+      client.on("user-joined", (user) => updateMember(String(user.uid), {}));
+      client.on("user-left", (user) => setRoomMembers((current) => current.filter((member) => member.id !== String(user.uid))));
+      client.on("user-published", async (user, mediaType) => {
+        await client.subscribe(user, mediaType);
+        const id = String(user.uid);
+        if (mediaType === "audio") { user.audioTrack?.play(); updateMember(id, { audioMuted: false }); }
+        if (mediaType === "video") {
+          updateMember(id, { videoMuted: false });
+          for (let attempt = 0; attempt < 20 && !document.getElementById(`remote-video-${id}`); attempt += 1) await new Promise((resolve) => window.setTimeout(resolve, 50));
+          const target = document.getElementById(`remote-video-${id}`);
+          if (target) user.videoTrack?.play(target, { fit: "cover" });
+        }
+      });
+      client.on("user-unpublished", (user, mediaType) => updateMember(String(user.uid), mediaType === "audio" ? { audioMuted: true } : { videoMuted: true }));
+      await client.join(appId, channelName, token, uid);
+      const microphone = await AgoraRTC.createMicrophoneAudioTrack();
+      await client.publish(microphone);
+      agoraClientRef.current = client;
+      roomUidRef.current = uid;
+      microphoneTrackRef.current = microphone;
+      setRoomMembers([{ id: uid, name: tokenDisplayName, audioMuted: false, videoMuted: true }]);
+      setRoomMode("agora");
     } catch {
-      permissionPrimer?.getTracks().forEach((track) => track.stop());
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         localMediaRef.current = stream;
         setRoomMode("local");
-        showToast("SignalWire was unavailable; showing a local device preview.");
+        showToast("Agora was unavailable; showing a local device preview.");
       } catch {
         setCameraOn(false);
         setMicOn(false);
@@ -149,10 +148,14 @@ export function App() {
   }
 
   function leaveRoom() {
-    void cameraDeviceRef.current?.leave();
-    cameraDeviceRef.current = null;
-    void roomSessionRef.current?.leave();
-    roomSessionRef.current = null;
+    const client = agoraClientRef.current;
+    const tracks = [microphoneTrackRef.current, cameraTrackRef.current].filter((track): track is IMicrophoneAudioTrack | ICameraVideoTrack => Boolean(track));
+    if (client) void client.unpublish(tracks).catch(() => undefined).then(() => client.leave());
+    tracks.forEach((track) => { track.stop(); track.close(); });
+    agoraClientRef.current = null;
+    roomUidRef.current = null;
+    microphoneTrackRef.current = null;
+    cameraTrackRef.current = null;
     const stream = videoRef.current?.srcObject as MediaStream | null;
     stream?.getTracks().forEach((track) => track.stop());
     localMediaRef.current?.getTracks().forEach((track) => track.stop());
@@ -165,8 +168,9 @@ export function App() {
 
   async function toggleMicrophone() {
     const next = !micOn;
-    if (roomMode === "signalwire" && roomSessionRef.current) {
-      if (next) await roomSessionRef.current.audioUnmute(); else await roomSessionRef.current.audioMute();
+    if (roomMode === "agora" && microphoneTrackRef.current) {
+      await microphoneTrackRef.current.setEnabled(next);
+      setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, audioMuted: !next } : member));
     } else {
       localMediaRef.current?.getAudioTracks().forEach((track) => track.enabled = next);
     }
@@ -175,46 +179,29 @@ export function App() {
 
   async function toggleCamera() {
     const next = !cameraOn;
-    if (roomMode === "signalwire" && roomSessionRef.current) {
+    if (roomMode === "agora" && agoraClientRef.current) {
       if (next) {
-        let permissionStream: MediaStream | undefined;
         try {
-          // Explicitly request camera permission before SignalWire enumerates
-          // devices, then direct it to the camera the browser selected.
-          permissionStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
-          const selectedDeviceId = permissionStream.getVideoTracks()[0]?.getSettings().deviceId;
+          const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+          const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
+          cameraTrackRef.current = camera;
           setCameraOn(true);
           await new Promise((resolve) => window.setTimeout(resolve, 0));
-          if (videoRef.current) { videoRef.current.srcObject = permissionStream; await videoRef.current.play(); }
-          const camera = await roomSessionRef.current.addCamera({ autoJoin: false, ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {}), width: { ideal: 1280 }, height: { ideal: 720 } });
-          await camera.join();
-          let stream = camera.localStream;
-          for (let attempt = 0; !stream && !camera.localVideoTrack && attempt < 40; attempt += 1) {
-            await new Promise((resolve) => window.setTimeout(resolve, 50));
-            stream = camera.localStream;
-          }
-          stream ??= camera.localVideoTrack ? new MediaStream([camera.localVideoTrack]) : undefined;
-          if (!stream?.getVideoTracks().some((track) => track.readyState === "live")) {
-            await camera.leave();
-            throw new Error("SignalWire did not provide a live camera track");
-          }
-          cameraDeviceRef.current = camera;
-          permissionStream.getTracks().forEach((track) => track.stop());
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            await videoRef.current.play();
-          }
+          if (agoraVideoRef.current) camera.play(agoraVideoRef.current, { fit: "cover", mirror: true });
+          await agoraClientRef.current.publish(camera);
+          setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: false } : member));
         } catch {
-          permissionStream?.getTracks().forEach((track) => track.stop());
-          cameraDeviceRef.current = null;
+          cameraTrackRef.current?.close();
+          cameraTrackRef.current = null;
           setCameraOn(false);
           showToast("The camera could not be started. Check browser permissions.");
         }
         return;
       }
-      await cameraDeviceRef.current?.leave();
-      cameraDeviceRef.current?.localStream?.getTracks().forEach((track) => track.stop());
-      cameraDeviceRef.current = null;
+      const camera = cameraTrackRef.current;
+      if (camera) { await agoraClientRef.current.unpublish(camera); camera.stop(); camera.close(); }
+      cameraTrackRef.current = null;
+      setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: true } : member));
     } else {
       if (next && !localMediaRef.current?.getVideoTracks().length) {
         const camera = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -261,16 +248,17 @@ export function App() {
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
 
   if (view === "room") return <div className="room-screen">
-    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "signalwire" ? "Connected through SignalWire" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "signalwire" ? "Live" : "Preview"}</span></div>
+    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "agora" ? "Connected through Agora" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
     {(() => {
+      const currentUserId = roomUidRef.current ?? auth.user.id;
       const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];
       const hasRoomVideo = cameraOn || roomMembers.some((member) => !member.videoMuted);
       return <div className={`video-stage ${hasRoomVideo ? "has-video" : "audio-only"}`}>
-        <div ref={signalWireRootRef} className={roomMode === "signalwire" && hasRoomVideo ? "signalwire-root" : "signalwire-root visually-hidden"} />
+        {hasRoomVideo && <div className="remote-video-grid">{displayMembers.filter((member) => member.id !== currentUserId && !member.videoMuted).map((member) => <div className="remote-video-tile" id={`remote-video-${member.id}`} key={member.id} />)}</div>}
         {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => <div className="audio-participant" key={member.id}><div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><strong>{member.name}</strong><span>{member.audioMuted ? <><MicOff size={13}/> Muted</> : <><Mic size={13}/> Listening</>}</span></div>)}</div>}
         {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><span className={`mini-avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</span><small>{member.name}</small></div>)}</div>}
-        {roomMode === "signalwire" && cameraOn && <video className="local-camera-preview" ref={videoRef} autoPlay muted playsInline />}
-        {roomMode !== "signalwire" && cameraOn && <video ref={videoRef} autoPlay muted playsInline />}
+        {roomMode === "agora" && cameraOn && <div className="local-camera-preview" ref={agoraVideoRef} />}
+        {roomMode === "local" && cameraOn && <video ref={videoRef} autoPlay muted playsInline />}
       </div>;
     })()}
     <div className="call-controls">
@@ -312,7 +300,7 @@ export function App() {
       </section>
 
       <section className="lower-grid">
-        <article className="common-card"><div className="common-visual"><div className="table"><span /><span /><span /></div></div><div className="common-copy"><p className="eyebrow">SHARED SPACE</p><h3>The Common Room</h3><p>Meetings here are transcribed, summarized, and turned into clear next steps.</p><div className="features"><span><Video size={15} /> SignalWire video</span><span><Mic size={15} /> Automatic notes</span></div><button className="enter-room" onClick={() => void enterRoom("main")}>Enter meeting room</button></div></article>
+        <article className="common-card"><div className="common-visual"><div className="table"><span /><span /><span /></div></div><div className="common-copy"><p className="eyebrow">SHARED SPACE</p><h3>The Common Room</h3><p>Meetings here are transcribed, summarized, and turned into clear next steps.</p><div className="features"><span><Video size={15} /> Agora audio & video</span><span><Mic size={15} /> Automatic notes</span></div><button className="enter-room" onClick={() => void enterRoom("main")}>Enter meeting room</button></div></article>
         <article className="notes-card"><div className="section-heading"><div><p className="eyebrow">RECENT</p><h3>Meeting notes</h3></div><button><ArrowUpRight size={18} /></button></div>
           {meetings.length ? meetings.map((meeting) => <div className="meeting" key={meeting.id}><div className="meeting-icon"><Clock3 size={19} /></div><div><strong>{meeting.title}</strong><small>{meeting.durationMinutes} min · {meeting.actionItemCount} action items</small></div></div>) : <p className="empty">Your completed meetings will appear here.</p>}
         </article>

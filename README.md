@@ -1,6 +1,6 @@
 # Common Room
 
-An internal office presence and conferencing application. Team members can signal availability, request a meeting, join a shared SignalWire room, and receive transcripts, summaries, and proposed action items.
+An internal office presence and conferencing application. Team members can signal availability, request a meeting, join a shared Agora channel, and receive transcripts, summaries, and proposed action items.
 
 ## Local development
 
@@ -33,11 +33,11 @@ The office dashboard, directory, meeting requests, health endpoint, presence soc
 
 1. Invite-only authentication and PostgreSQL repositories
 2. Redis-backed presence and meeting-request delivery
-3. SignalWire room lifecycle webhooks and automatic recording
+3. Agora channel lifecycle webhooks and automatic recording
 4. Recording completion jobs and ElevenLabs transcription
 5. Structured meeting summaries and action-item confirmation
 6. Electron packaging, notification handling, and signed Windows releases
 
-## SignalWire
+## Agora
 
-Set `SIGNALWIRE_SPACE_URL`, `SIGNALWIRE_PROJECT_ID`, and `SIGNALWIRE_API_TOKEN` only on the API service. The API token must have the Video scope. The browser receives a short-lived room token and never receives project credentials.
+Create an Agora project secured with an App Certificate. Set `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` only on the API service. The browser receives a one-hour channel token; the App Certificate is never sent to it. Calls join with microphone audio only and publish video only after the user enables their camera.

@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@office/contracts": "*",
-    "@signalwire/js": "3.29.0",
+    "agora-rtc-sdk-ng": "^4.24.7",
     "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
