@@ -10,7 +10,8 @@ const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
 interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
 interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; direction: "incoming" | "outgoing" }
-interface RoomSessionControls { join(options: { audio: boolean; video: boolean }): Promise<unknown>; leave(): Promise<void>; audioMute(): Promise<unknown>; audioUnmute(): Promise<unknown>; videoMute(): Promise<unknown>; videoUnmute(): Promise<unknown> }
+interface CameraDevice { localStream?: MediaStream; leave(): Promise<void> }
+interface RoomSessionControls { join(options: { audio: boolean; video: boolean }): Promise<unknown>; leave(): Promise<void>; audioMute(): Promise<unknown>; audioUnmute(): Promise<unknown>; addCamera(options?: MediaTrackConstraints & { autoJoin?: boolean }): Promise<CameraDevice> }
 
 export function App() {
   const [people, setPeople] = useState<Person[]>([]);
@@ -26,6 +27,7 @@ export function App() {
   const localMediaRef = useRef<MediaStream | null>(null);
   const signalWireRootRef = useRef<HTMLDivElement>(null);
   const roomSessionRef = useRef<RoomSessionControls | null>(null);
+  const cameraDeviceRef = useRef<CameraDevice | null>(null);
   const [roomMode, setRoomMode] = useState<"loading" | "signalwire" | "local">("loading");
   const [auth, setAuth] = useState<AuthStatus>();
   const [email, setEmail] = useState("");
@@ -120,6 +122,8 @@ export function App() {
   }
 
   function leaveRoom() {
+    void cameraDeviceRef.current?.leave();
+    cameraDeviceRef.current = null;
     void roomSessionRef.current?.leave();
     roomSessionRef.current = null;
     const stream = videoRef.current?.srcObject as MediaStream | null;
@@ -144,7 +148,21 @@ export function App() {
   async function toggleCamera() {
     const next = !cameraOn;
     if (roomMode === "signalwire" && roomSessionRef.current) {
-      if (next) await roomSessionRef.current.videoUnmute(); else await roomSessionRef.current.videoMute();
+      if (next) {
+        try {
+          const camera = await roomSessionRef.current.addCamera({ autoJoin: true, width: { ideal: 1280 }, height: { ideal: 720 } });
+          cameraDeviceRef.current = camera;
+          setCameraOn(true);
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+          if (videoRef.current && camera.localStream) videoRef.current.srcObject = camera.localStream;
+        } catch {
+          showToast("The camera could not be started. Check browser permissions.");
+        }
+        return;
+      }
+      await cameraDeviceRef.current?.leave();
+      cameraDeviceRef.current?.localStream?.getTracks().forEach((track) => track.stop());
+      cameraDeviceRef.current = null;
     } else {
       if (next && !localMediaRef.current?.getVideoTracks().length) {
         const camera = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -192,7 +210,7 @@ export function App() {
 
   if (view === "room") return <div className="room-screen">
     <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "signalwire" ? "Connected through SignalWire" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "signalwire" ? "Live" : "Preview"}</span></div>
-    <div className="video-stage"><div ref={signalWireRootRef} className={roomMode === "signalwire" ? "signalwire-root" : "signalwire-root hidden"} />{roomMode !== "signalwire" && (cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">MC</div><span>Camera is off</span></div>)}</div>
+    <div className="video-stage"><div ref={signalWireRootRef} className={roomMode === "signalwire" ? "signalwire-root" : "signalwire-root hidden"} />{roomMode === "signalwire" && cameraOn && <video className="local-camera-preview" ref={videoRef} autoPlay muted playsInline />}{roomMode !== "signalwire" && (cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><span>Camera is off</span></div>)}</div>
     <div className="call-controls">
       <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()}>{micOn ? <Mic /> : <MicOff />}</button>
       <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()}>{cameraOn ? <Video /> : <VideoOff />}</button>
