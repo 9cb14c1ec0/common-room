@@ -2,7 +2,7 @@ services:
   - type: web
     name: common-room-web
     runtime: static
-    buildCommand: npm ci && npm run build -w @office/web
+    buildCommand: npm ci --include=dev && npm run build -w @office/web
     staticPublishPath: apps/web/dist
     envVars:
       - key: VITE_API_URL
@@ -16,7 +16,7 @@ services:
     name: common-room-api
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build -w @office/api
+    buildCommand: npm ci --include=dev && npm run build -w @office/api
     startCommand: npm run start -w @office/api
     healthCheckPath: /health
     envVars:
@@ -35,7 +35,7 @@ services:
     name: common-room-worker
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build -w @office/worker
+    buildCommand: npm ci --include=dev && npm run build -w @office/worker
     startCommand: npm run start -w @office/worker
     envVars:
       - key: NODE_VERSION
