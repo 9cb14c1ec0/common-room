@@ -10,7 +10,7 @@ const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
 interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
 interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; direction: "incoming" | "outgoing" }
-interface CameraDevice { localStream?: MediaStream; leave(): Promise<void> }
+interface CameraDevice { localStream?: MediaStream; localVideoTrack?: MediaStreamTrack | null; join(): Promise<void>; leave(): Promise<void> }
 interface RoomSessionControls { join(options: { audio: boolean; video: boolean }): Promise<unknown>; leave(): Promise<void>; audioMute(): Promise<unknown>; audioUnmute(): Promise<unknown>; addCamera(options?: MediaTrackConstraints & { autoJoin?: boolean }): Promise<CameraDevice> }
 
 export function App() {
@@ -150,12 +150,28 @@ export function App() {
     if (roomMode === "signalwire" && roomSessionRef.current) {
       if (next) {
         try {
-          const camera = await roomSessionRef.current.addCamera({ autoJoin: true, width: { ideal: 1280 }, height: { ideal: 720 } });
+          const camera = await roomSessionRef.current.addCamera({ autoJoin: false, width: { ideal: 1280 }, height: { ideal: 720 } });
+          await camera.join();
+          let stream = camera.localStream;
+          for (let attempt = 0; !stream && !camera.localVideoTrack && attempt < 40; attempt += 1) {
+            await new Promise((resolve) => window.setTimeout(resolve, 50));
+            stream = camera.localStream;
+          }
+          stream ??= camera.localVideoTrack ? new MediaStream([camera.localVideoTrack]) : undefined;
+          if (!stream?.getVideoTracks().some((track) => track.readyState === "live")) {
+            await camera.leave();
+            throw new Error("SignalWire did not provide a live camera track");
+          }
           cameraDeviceRef.current = camera;
           setCameraOn(true);
           await new Promise((resolve) => window.setTimeout(resolve, 0));
-          if (videoRef.current && camera.localStream) videoRef.current.srcObject = camera.localStream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            await videoRef.current.play();
+          }
         } catch {
+          cameraDeviceRef.current = null;
+          setCameraOn(false);
           showToast("The camera could not be started. Check browser permissions.");
         }
         return;
