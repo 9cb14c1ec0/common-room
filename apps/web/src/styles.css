@@ -27,11 +27,11 @@ h1 { font-size: 32px; } h2 { font-size: clamp(32px, 4vw, 52px); margin: 20px 0 9
 .icon-button, .notes-card button { border: 1px solid #d4d4cc; background: #faf9f6; border-radius: 10px; width: 42px; height: 42px; display: grid; place-items: center; color: #4b5852; }
 .hero { min-height: 154px; padding: 27px 30px; border-radius: 18px; background: #dce7c7; display: flex; justify-content: space-between; align-items: center; overflow: hidden; position: relative; }
 .hero.door-closed { background: #dddcd5; }
-.hero:after { content:""; position:absolute; width:180px; height:180px; border:42px solid rgba(255,255,255,.22); border-radius:50%; right:-62px; top:-100px; }
+.hero:after { content:""; position:absolute; width:180px; height:180px; border:42px solid rgba(255,255,255,.22); border-radius:50%; right:-62px; top:-100px; pointer-events:none; }
 .hero h2 { font-size: clamp(27px, 3vw, 38px); margin: 12px 0 5px; }
 .hero p { margin: 0; color: #536056; font-size: 14px; }
 .room-label { font-size: 11px; font-weight: 600; letter-spacing: .1em; }
-.close-door { z-index: 1; display: flex; gap: 9px; align-items: center; white-space: nowrap; background: #17231f; color: white; border: 0; border-radius: 12px; padding: 13px 17px; }
+.close-door { position:relative; z-index: 2; display: flex; gap: 9px; align-items: center; white-space: nowrap; background: #17231f; color: white; border: 0; border-radius: 12px; padding: 13px 17px; cursor:pointer; }.close-door:disabled{opacity:.7;cursor:wait}
 .section-block { margin-top: 42px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 17px; }
 .section-heading > span { color: #7a837e; font-size: 13px; }

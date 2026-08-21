@@ -19,6 +19,7 @@ export function App() {
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
   const [sentTo, setSentTo] = useState<string>();
   const [doorOpen, setDoorOpen] = useState(true);
+  const [doorSaving, setDoorSaving] = useState(false);
   const [view, setView] = useState<"office" | "requests" | "notes" | "room">("office");
   const [requests, setRequests] = useState<RequestView[]>([]);
   const [toast, setToast] = useState<string>();
@@ -101,12 +102,20 @@ export function App() {
   }
 
   async function toggleDoor() {
+    if (doorSaving) return;
     const next = !doorOpen;
-    const response = await fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ doorOpen: next }) });
-    if (!response.ok) { showToast("Your door status could not be changed"); return; }
+    setDoorSaving(true);
     setDoorOpen(next);
     setPeople((current) => current.map((person) => person.id === auth?.user?.id ? { ...person, presence: next ? "available" : "do_not_disturb" } : person));
     showToast(next ? "Your door is now open" : "Your door is now closed");
+    try {
+      const response = await fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ doorOpen: next }) });
+      if (!response.ok) throw new Error("Presence update failed");
+    } catch {
+      setDoorOpen(!next);
+      setPeople((current) => current.map((person) => person.id === auth?.user?.id ? { ...person, presence: !next ? "available" : "do_not_disturb" } : person));
+      showToast("Your door status could not be saved");
+    } finally { setDoorSaving(false); }
   }
 
   async function enterRoom(roomId = "main") {
@@ -307,7 +316,7 @@ export function App() {
 
       {view === "office" && <><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> YOUR DOOR IS {doorOpen ? "OPEN" : "CLOSED"}</span><h2>{doorOpen ? "Ready when you are." : "Taking some focus time."}</h2><p>{doorOpen ? "People can ask to meet. You’ll always choose whether to join." : "New meeting requests are paused until you open your door."}</p></div>
-        <button className="close-door" onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorOpen ? "Close my door" : "Open my door"}</button>
+        <button type="button" className="close-door" disabled={doorSaving} onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorSaving ? "Saving…" : doorOpen ? "Close my door" : "Open my door"}</button>
       </section>
 
       <section className="section-block">
