@@ -91,6 +91,18 @@ export async function buildApp() {
     const result = await database.query("SELECT id,display_name,title,presence FROM users ORDER BY display_name");
     return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence })) };
   });
+  app.patch("/api/presence", async (request, reply) => {
+    const input = z.object({ doorOpen: z.boolean() }).parse(request.body);
+    if (!database) {
+      const person = people.find((item) => item.id === "maya");
+      if (person) person.presence = input.doorOpen ? "available" : "do_not_disturb";
+      return { doorOpen: input.doorOpen };
+    }
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    await database.query("UPDATE users SET presence=$1 WHERE id=$2", [input.doorOpen ? "available" : "do_not_disturb", user.id]);
+    return { doorOpen: input.doorOpen };
+  });
   app.post("/api/users", async (request, reply) => {
     if (!database) return reply.code(400).send({ error: "Database is not configured" });
     const user = await currentUser(database, request);
@@ -169,6 +181,9 @@ export async function buildApp() {
     if (database) {
       const user = await currentUser(database, request);
       if (!user) return reply.code(401).send({ error: "Authentication required" });
+      const recipient = await database.query("SELECT presence FROM users WHERE id=$1", [input.toId]);
+      if (!recipient.rows[0]) return reply.code(404).send({ error: "Person not found" });
+      if (recipient.rows[0].presence !== "available") return reply.code(409).send({ error: "That person’s door is closed" });
       const result = await database.query("INSERT INTO meeting_requests(sender_id,recipient_id,message) VALUES($1,$2,$3) RETURNING id,status,created_at", [user.id, input.toId, input.message ?? null]);
       return reply.code(201).send({ request: { ...result.rows[0], from: user, toId: input.toId } });
     }
@@ -199,6 +214,19 @@ export async function buildApp() {
     const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,status,started_at) VALUES($1,'waiting',now()) RETURNING id", [roomName]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     return { status: input.status, meetingId: meeting.rows[0].id };
+  });
+
+  app.delete<{ Params: { requestId: string } }>("/api/requests/:requestId", async (request, reply) => {
+    if (!database) {
+      const index = requests.findIndex((item) => item.id === request.params.requestId);
+      if (index >= 0) requests.splice(index, 1);
+      return reply.code(204).send();
+    }
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("DELETE FROM meeting_requests WHERE id=$1 AND (sender_id=$2 OR recipient_id=$2) RETURNING id", [request.params.requestId, user.id]);
+    if (!result.rowCount) return reply.code(404).send({ error: "Meeting request not found" });
+    return reply.code(204).send();
   });
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/token", async (request, reply) => {

@@ -56,14 +56,19 @@ export function App() {
       if (!response.ok) throw new Error("API unavailable");
       const status: AuthStatus = await response.json();
       setAuth(status);
-      if (status.user) await loadOfficeData();
+      if (status.user) await loadOfficeData(status.user.id);
     } catch { setAuthError("The Common Room API is unavailable. Check the web service API URL."); }
   }
 
-  async function loadOfficeData() {
+  async function loadOfficeData(currentUserId = auth?.user?.id) {
     const options = { credentials: "include" as const };
     const [peopleResponse, meetingsResponse, requestsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/meetings`, options), fetch(`${apiUrl}/api/requests`, options)]);
-    if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
+    if (peopleResponse.ok) {
+      const loadedPeople: Person[] = (await peopleResponse.json()).people;
+      setPeople(loadedPeople);
+      const currentPerson = loadedPeople.find((person) => person.id === currentUserId);
+      if (currentPerson) setDoorOpen(currentPerson.presence === "available");
+    }
     if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
     if (requestsResponse.ok) setRequests((await requestsResponse.json()).requests);
   }
@@ -84,7 +89,7 @@ export function App() {
       credentials: "include",
       body: JSON.stringify({ fromId: auth?.user?.id ?? "", toId: person.id, message: "Meet me in the Common Room?" })
     }).catch(() => undefined);
-    if (!response || !response.ok) { showToast("The meeting request could not be sent"); setSentTo(undefined); return; }
+    if (!response || !response.ok) { const body = response ? await response.json().catch(() => ({})) : {}; showToast(body.error ?? "The meeting request could not be sent"); setSentTo(undefined); return; }
     showToast(`Meeting request sent to ${person.name}`);
     await loadOfficeData();
     window.setTimeout(() => setSentTo(undefined), 1800);
@@ -93,6 +98,15 @@ export function App() {
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(undefined), 2600);
+  }
+
+  async function toggleDoor() {
+    const next = !doorOpen;
+    const response = await fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ doorOpen: next }) });
+    if (!response.ok) { showToast("Your door status could not be changed"); return; }
+    setDoorOpen(next);
+    setPeople((current) => current.map((person) => person.id === auth?.user?.id ? { ...person, presence: next ? "available" : "do_not_disturb" } : person));
+    showToast(next ? "Your door is now open" : "Your door is now closed");
   }
 
   async function enterRoom(roomId = "main") {
@@ -245,6 +259,13 @@ export function App() {
     else showToast(status === "cancelled" ? "Request cancelled" : `Request ${status}`);
   }
 
+  async function dismissRequest(item: RequestView) {
+    const response = await fetch(`${apiUrl}/api/requests/${item.id}`, { method: "DELETE", credentials: "include" });
+    if (!response.ok) { showToast("The request could not be dismissed"); return; }
+    setRequests((current) => current.filter((request) => request.id !== item.id));
+    showToast("Request dismissed");
+  }
+
   if (inviteToken) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void acceptInvite(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">YOU’RE INVITED</p><h1>Join Common Room</h1>{invitation ? <><p>Create your account for <strong>{invitation.email}</strong>{invitation.title ? ` as ${invitation.title}` : ""}.</p><label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={10} autoComplete="new-password" /></label><button type="submit">Accept invitation</button></> : <p>{authError ?? "Checking your invitation…"}</p>}</form></div>;
 
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
@@ -286,7 +307,7 @@ export function App() {
 
       {view === "office" && <><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> YOUR DOOR IS {doorOpen ? "OPEN" : "CLOSED"}</span><h2>{doorOpen ? "Ready when you are." : "Taking some focus time."}</h2><p>{doorOpen ? "People can ask to meet. You’ll always choose whether to join." : "New meeting requests are paused until you open your door."}</p></div>
-        <button className="close-door" onClick={() => { setDoorOpen(!doorOpen); showToast(doorOpen ? "Your door is now closed" : "Your door is now open"); }}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorOpen ? "Close my door" : "Open my door"}</button>
+        <button className="close-door" onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorOpen ? "Close my door" : "Open my door"}</button>
       </section>
 
       <section className="section-block">
@@ -307,7 +328,7 @@ export function App() {
           {meetings.length ? meetings.map((meeting) => <div className="meeting" key={meeting.id}><div className="meeting-icon"><Clock3 size={19} /></div><div><strong>{meeting.title}</strong><small>{meeting.durationMinutes} min · {meeting.actionItemCount} action items</small></div></div>) : <p className="empty">Your completed meetings will appear here.</p>}
         </article>
       </section></>}
-      {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div>{item.status === "pending" && <div className="request-actions">{item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button>}</div>}</article>)}</section>}
+      {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button>}</div></article>)}</section>}
       {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><p>{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} proposed action items</div></article>) : <div className="empty-state"><History size={28} /><h3>No meeting notes yet</h3></div>}</section>}
     </main>
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}
