@@ -11,6 +11,7 @@ CREATE TABLE users (
   password_hash text NOT NULL,
   display_name text NOT NULL,
   title text NOT NULL DEFAULT '',
+  is_admin boolean NOT NULL DEFAULT false,
   presence presence_status NOT NULL DEFAULT 'offline',
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -57,6 +58,14 @@ CREATE TABLE action_items (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE sessions (
+  id_hash text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX meeting_requests_recipient_idx ON meeting_requests(recipient_id, status, created_at DESC);
 CREATE INDEX meetings_created_idx ON meetings(created_at DESC);
 CREATE INDEX action_items_assignee_idx ON action_items(assignee_id, status);
+CREATE INDEX sessions_user_idx ON sessions(user_id, expires_at);

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Video as SignalWireVideo } from "@signalwire/js";
 import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, Mic, MicOff, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
 import type { MeetingSummary, Person } from "@office/contracts";
 
@@ -22,6 +23,9 @@ export function App() {
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const signalWireRootRef = useRef<HTMLDivElement>(null);
+  const roomSessionRef = useRef<InstanceType<typeof SignalWireVideo.RoomSession> | null>(null);
+  const [roomMode, setRoomMode] = useState<"loading" | "signalwire" | "local">("loading");
 
   useEffect(() => {
     void fetch(`${apiUrl}/api/people`).then((r) => r.json()).then((data) => setPeople(data.people)).catch(() => undefined);
@@ -46,28 +50,68 @@ export function App() {
 
   async function enterRoom() {
     setView("room");
+    setRoomMode("loading");
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-      if (videoRef.current) videoRef.current.srcObject = stream;
+      const response = await fetch(`${apiUrl}/api/meetings/main/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: "Maya Chen" }) });
+      if (!response.ok) throw new Error("SignalWire token unavailable");
+      const { token } = await response.json();
+      if (!signalWireRootRef.current) throw new Error("Room view unavailable");
+      const session = new SignalWireVideo.RoomSession({ token, rootElement: signalWireRootRef.current });
+      roomSessionRef.current = session;
+      await session.join({ audio: true, video: true });
+      setRoomMode("signalwire");
     } catch {
-      setCameraOn(false);
-      setMicOn(false);
-      showToast("Camera access is unavailable; room preview opened without media.");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        setRoomMode("local");
+        showToast("SignalWire was unavailable; showing a local device preview.");
+      } catch {
+        setCameraOn(false);
+        setMicOn(false);
+        setRoomMode("local");
+        showToast("Camera access is unavailable; room opened without media.");
+      }
     }
   }
 
   function leaveRoom() {
+    void roomSessionRef.current?.leave();
+    roomSessionRef.current = null;
     const stream = videoRef.current?.srcObject as MediaStream | null;
     stream?.getTracks().forEach((track) => track.stop());
     setView("office");
   }
 
+  async function toggleMicrophone() {
+    const next = !micOn;
+    if (roomMode === "signalwire" && roomSessionRef.current) {
+      if (next) await roomSessionRef.current.audioUnmute(); else await roomSessionRef.current.audioMute();
+    } else {
+      const stream = videoRef.current?.srcObject as MediaStream | null;
+      stream?.getAudioTracks().forEach((track) => track.enabled = next);
+    }
+    setMicOn(next);
+  }
+
+  async function toggleCamera() {
+    const next = !cameraOn;
+    if (roomMode === "signalwire" && roomSessionRef.current) {
+      if (next) await roomSessionRef.current.videoUnmute(); else await roomSessionRef.current.videoMute();
+    } else {
+      const stream = videoRef.current?.srcObject as MediaStream | null;
+      stream?.getVideoTracks().forEach((track) => track.enabled = next);
+    }
+    setCameraOn(next);
+  }
+
   if (view === "room") return <div className="room-screen">
-    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave preview</button><div><strong>The Common Room</strong><small>Local device preview</small></div><span className="recording-pill">SignalWire not connected</span></div>
-    <div className="video-stage">{cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">MC</div><span>Camera is off</span></div>}</div>
+    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "signalwire" ? "Connected through SignalWire" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "signalwire" ? "Live" : "Preview"}</span></div>
+    <div className="video-stage"><div ref={signalWireRootRef} className={roomMode === "signalwire" ? "signalwire-root" : "signalwire-root hidden"} />{roomMode !== "signalwire" && (cameraOn ? <video ref={videoRef} autoPlay muted playsInline /> : <div className="camera-off"><div className="avatar tone-0">MC</div><span>Camera is off</span></div>)}</div>
     <div className="call-controls">
-      <button className={!micOn ? "control-off" : ""} onClick={() => { setMicOn(!micOn); const stream = videoRef.current?.srcObject as MediaStream | null; stream?.getAudioTracks().forEach((track) => track.enabled = !micOn); }}>{micOn ? <Mic /> : <MicOff />}</button>
-      <button className={!cameraOn ? "control-off" : ""} onClick={() => { setCameraOn(!cameraOn); const stream = videoRef.current?.srcObject as MediaStream | null; stream?.getVideoTracks().forEach((track) => track.enabled = !cameraOn); }}>{cameraOn ? <Video /> : <VideoOff />}</button>
+      <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()}>{micOn ? <Mic /> : <MicOff />}</button>
+      <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()}>{cameraOn ? <Video /> : <VideoOff />}</button>
       <button className="hangup" onClick={leaveRoom}><PhoneOff /></button>
     </div>
   </div>;

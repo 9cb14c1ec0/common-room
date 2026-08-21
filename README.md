@@ -33,7 +33,11 @@ The office dashboard, directory, meeting requests, health endpoint, presence soc
 
 1. Invite-only authentication and PostgreSQL repositories
 2. Redis-backed presence and meeting-request delivery
-3. SignalWire room-token issuance and room lifecycle webhooks
+3. SignalWire room lifecycle webhooks and automatic recording
 4. Recording completion jobs and ElevenLabs transcription
 5. Structured meeting summaries and action-item confirmation
 6. Electron packaging, notification handling, and signed Windows releases
+
+## SignalWire
+
+Set `SIGNALWIRE_SPACE_URL`, `SIGNALWIRE_PROJECT_ID`, and `SIGNALWIRE_API_TOKEN` only on the API service. The API token must have the Video scope. The browser receives a short-lived room token and never receives project credentials.
