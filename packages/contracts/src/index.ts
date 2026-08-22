@@ -24,6 +24,8 @@ export interface MeetingSummary {
   durationMinutes: number;
   participants: Person[];
   summary: string;
+  processingStatus: string;
+  processingError: string | null;
   actionItemCount: number;
   actionItems: Array<{
     id: string;

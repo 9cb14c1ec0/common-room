@@ -24,6 +24,8 @@ const meetings: MeetingSummary[] = [{
   durationMinutes: 34,
   participants: people.slice(0, 3),
   summary: "The team aligned on the onboarding release and resolved the remaining copy review.",
+  processingStatus: "analyzed",
+  processingError: null,
   actionItemCount: 0,
   actionItems: []
 }];
@@ -169,10 +171,10 @@ export async function buildApp() {
     if (!database) return { meetings };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query(`SELECT m.id,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,
+    const result = await database.query(`SELECT m.id,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,m.recording_status,m.processing_error,
       coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'description',a.description,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id),'[]'::jsonb) action_items
       FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 ORDER BY m.created_at DESC LIMIT 30`, [user.id]);
-    return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
+    return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
   });
   app.get("/api/requests", async (request, reply) => {
     if (!database) return { requests };

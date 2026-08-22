@@ -58,9 +58,10 @@ export function App() {
     const refreshRealtime = async (announce: boolean) => {
       try {
         const options = { credentials: "include" as const };
-        const [peopleResponse, requestsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options)]);
+        const [peopleResponse, requestsResponse, meetingsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options), fetch(`${apiUrl}/api/meetings`, options)]);
         if (!active) return;
         if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
+        if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
         if (requestsResponse.ok) {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
           if (announce) for (const item of nextRequests) {
@@ -180,7 +181,9 @@ export function App() {
       await client.join(appId, channelName, token, uid);
       const microphone = await AgoraRTC.createMicrophoneAudioTrack();
       await client.publish(microphone);
-      void fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
+      const recordingResponse = await fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
+      const recordingResult = await recordingResponse.json().catch(() => ({})) as { status?: string; error?: string };
+      if (!recordingResponse.ok || recordingResult.status === "failed" || recordingResult.status === "unavailable") showToast(recordingResult.error ?? "Automatic recording could not start.");
       agoraClientRef.current = client;
       roomUidRef.current = uid;
       microphoneTrackRef.current = microphone;
@@ -373,7 +376,7 @@ export function App() {
         </article>
       </section></>}
       {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <>{item.status === "accepted" && item.meetingId && <button className="accept" onClick={() => void enterRoom(item.meetingId)}><Video size={16}/> Join</button>}<button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button></>}</div></article>)}</section>}
-      {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} proposed action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => <li key={item.id}><strong>{item.description}</strong><small>{item.assigneeName ?? "Unassigned"}{item.dueAt ? ` · due ${new Date(item.dueAt).toLocaleDateString()}` : ""}{item.confidence !== null ? ` · ${Math.round(item.confidence * 100)}% confidence` : ""}</small></li>)}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>No meeting notes yet</h3></div>}</section>}
+      {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} proposed action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => <li key={item.id}><strong>{item.description}</strong><small>{item.assigneeName ?? "Unassigned"}{item.dueAt ? ` · due ${new Date(item.dueAt).toLocaleDateString()}` : ""}{item.confidence !== null ? ` · ${Math.round(item.confidence * 100)}% confidence` : ""}</small></li>)}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>No meeting notes yet</h3></div>}</section>}
     </main>
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}
   </div>;
