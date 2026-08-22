@@ -19,6 +19,18 @@ interface MeetingAnalysis {
   actionItems: Array<{ description: string; assigneeName: string | null; dueDate: string | null; sourceTimestampSeconds: number | null; confidence: number }>;
 }
 
+function transcriptText(transcript: unknown): string {
+  if (!transcript || typeof transcript !== "object") return typeof transcript === "string" ? transcript.trim() : "";
+  const value = transcript as { text?: unknown; words?: unknown };
+  if (typeof value.text === "string" && value.text.trim()) return value.text.trim();
+  if (Array.isArray(value.words)) return value.words.map((word) => {
+    if (typeof word === "string") return word;
+    if (word && typeof word === "object" && "text" in word && typeof word.text === "string") return word.text;
+    return "";
+  }).join(" ").replace(/\s+/g, " ").trim();
+  return "";
+}
+
 function recorderToken(channelName: string, uid: string) {
   const appId = process.env.AGORA_APP_ID;
   const certificate = process.env.AGORA_APP_CERTIFICATE;
@@ -148,10 +160,12 @@ async function processNextTranscript() {
     meeting = claimed.rows[0];
     if (!meeting) return;
     const transcript = await transcribeFile(meeting.recording_url);
+    const text = transcriptText(transcript);
+    if (!text) throw new Error("ElevenLabs returned a successful response but no transcript text; the recording was retained for retry");
     await pool.query("UPDATE meetings SET transcript=$1,recording_status='transcribed',processing_error=NULL WHERE id=$2", [JSON.stringify(transcript), meeting.id]);
     await rm(meeting.recording_url, { force: true });
     await rm(path.join(recordingRoot, `${meeting.id}.json`), { force: true });
-    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting transcribed and recording deleted", meetingId: meeting.id }));
+    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting transcribed and recording deleted", meetingId: meeting.id, transcriptCharacters: text.length, transcriptWords: text.split(/\s+/).length }));
   } catch (error) {
     if (meeting) {
       const attempts = meeting.transcription_attempts + 1;
@@ -165,6 +179,8 @@ async function processNextTranscript() {
 async function analyzeTranscript(transcript: unknown, participants: Array<{ id: string; name: string }>): Promise<MeetingAnalysis> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured");
+  const text = transcriptText(transcript);
+  if (!text) throw new Error("Meeting transcript contains no speech text to analyze");
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", "x-title": "Common Room" },
@@ -172,7 +188,7 @@ async function analyzeTranscript(transcript: unknown, participants: Array<{ id: 
       model: process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna",
       messages: [
         { role: "system", content: "Analyze an internal company meeting transcript. Be concise and factual. Propose an action item only when the transcript contains a genuine commitment, request, or clearly assigned next step. Never invent an assignee or due date. Use only participant names from the supplied list; otherwise use null. Timestamps must point to supporting transcript evidence." },
-        { role: "user", content: JSON.stringify({ participants: participants.map((item) => item.name), transcript }) }
+        { role: "user", content: JSON.stringify({ participants: participants.map((item) => item.name), transcript: text }) }
       ],
       provider: { require_parameters: true },
       response_format: { type: "json_schema", json_schema: { name: "meeting_analysis", strict: true, schema: {
