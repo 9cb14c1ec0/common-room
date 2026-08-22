@@ -55,6 +55,8 @@ services:
         sync: false
       - key: OPENROUTER_MODEL
         value: openai/gpt-5.6-luna
+      - key: EMPTY_ROOM_GRACE_MS
+        value: 10000
 
 databases:
   - name: common-room-db

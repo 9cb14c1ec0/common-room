@@ -7,8 +7,9 @@ import pg from "pg";
 const intervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000);
 const recordingRoot = process.env.RECORDING_TEMP_DIR ?? "/tmp/common-room-recordings";
 const recorderJar = process.env.AGORA_RECORDER_JAR ?? "/opt/agora/agora-example.jar";
+const emptyRoomGraceMs = Number(process.env.EMPTY_ROOM_GRACE_MS ?? 10_000);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined, max: 3 }) : undefined;
-const recorders = new Map<string, { child: ChildProcessWithoutNullStreams; recordingPath: string; stopping: boolean }>();
+const recorders = new Map<string, { child: ChildProcessWithoutNullStreams; recordingPath: string; stopping: boolean; remoteUsers: Set<string>; sawParticipant: boolean; emptySince?: number; logBuffer: string }>();
 let processingTranscript = false;
 let processingSummary = false;
 
@@ -49,8 +50,24 @@ async function startNextRecording() {
       stressTest: { enable: false, enableSingleChannel: true, threadNum: 1, testTime: 1, oneTestTime: 1, sleepTime: 1 }
     }));
     const child = spawn("java", ["-Dloader.main=io.agora.example.recording.cli.CliLauncher", "-cp", recorderJar, "org.springframework.boot.loader.PropertiesLauncher", `--configFileName=${configPath}`], { cwd: "/opt/agora", stdio: ["pipe", "pipe", "pipe"] });
-    recorders.set(meeting.id, { child, recordingPath, stopping: false });
-    child.stdout.on("data", (data) => process.stdout.write(`[recorder ${meeting.id}] ${data}`));
+    recorders.set(meeting.id, { child, recordingPath, stopping: false, remoteUsers: new Set(), sawParticipant: false, logBuffer: "" });
+    child.stdout.on("data", (data) => {
+      process.stdout.write(`[recorder ${meeting.id}] ${data}`);
+      const recorder = recorders.get(meeting.id);
+      if (!recorder) return;
+      recorder.logBuffer += String(data);
+      const lines = recorder.logBuffer.split(/\r?\n/);
+      recorder.logBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const joined = line.match(/onUserJoined .* userId:([^\s]+)/)?.[1];
+        const left = line.match(/onUserLeft .* userId:([^\s]+)/)?.[1];
+        if (joined && !joined.startsWith("recorder-")) { recorder.remoteUsers.add(joined); recorder.sawParticipant = true; recorder.emptySince = undefined; }
+        if (left && !left.startsWith("recorder-")) {
+          recorder.remoteUsers.delete(left);
+          if (recorder.sawParticipant && recorder.remoteUsers.size === 0) recorder.emptySince = Date.now();
+        }
+      }
+    });
     child.stderr.on("data", (data) => process.stderr.write(`[recorder ${meeting.id}] ${data}`));
     child.once("error", (error) => void failRecording(meeting.id, error));
     child.once("close", (code) => void finishRecording(meeting.id, recordingPath, code));
@@ -91,6 +108,17 @@ async function stopFinishedMeetings() {
   for (const row of result.rows) {
     const recorder = recorders.get(row.id);
     if (recorder && !recorder.stopping) { recorder.stopping = true; recorder.child.stdin.write("1\n"); }
+  }
+}
+
+async function stopEmptyRooms() {
+  if (!pool) return;
+  for (const [meetingId, recorder] of recorders) {
+    if (recorder.stopping || !recorder.sawParticipant || recorder.remoteUsers.size || !recorder.emptySince || Date.now() - recorder.emptySince < emptyRoomGraceMs) continue;
+    recorder.stopping = true;
+    await pool.query("UPDATE meetings SET status='processing',ended_at=coalesce(ended_at,now()) WHERE id=$1 AND status='active'", [meetingId]);
+    recorder.child.stdin.write("1\n");
+    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Finalizing recording after the room became empty", meetingId }));
   }
 }
 
@@ -204,7 +232,7 @@ async function processNextSummary() {
 }
 
 async function tick() {
-  try { await stopFinishedMeetings(); await startNextRecording(); await processNextTranscript(); await processNextSummary(); }
+  try { await stopEmptyRooms(); await stopFinishedMeetings(); await startNextRecording(); await processNextTranscript(); await processNextSummary(); }
   catch (error) { console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Worker tick failed", error: error instanceof Error ? error.message : String(error) })); }
 }
 
