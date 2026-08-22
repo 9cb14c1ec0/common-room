@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import AgoraToken from "agora-token";
 import pg from "pg";
@@ -67,9 +67,21 @@ async function failRecording(meetingId: string, error: unknown) {
 async function finishRecording(meetingId: string, recordingPath: string, code: number | null) {
   recorders.delete(meetingId);
   try {
-    const file = await stat(recordingPath);
+    let actualRecordingPath = recordingPath;
+    try {
+      await stat(actualRecordingPath);
+    } catch {
+      const candidates = (await readdir(recordingRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.startsWith(`${meetingId}_`) && entry.name.endsWith(".mp4"))
+        .map((entry) => path.join(recordingRoot, entry.name));
+      if (!candidates.length) throw new Error(`Agora did not create an MP4 for meeting ${meetingId}`);
+      const files = await Promise.all(candidates.map(async (candidate) => ({ candidate, modified: (await stat(candidate)).mtimeMs })));
+      actualRecordingPath = files.sort((left, right) => right.modified - left.modified)[0].candidate;
+    }
+    const file = await stat(actualRecordingPath);
     if (code !== 0 || file.size === 0) throw new Error(`Recorder exited with code ${code} and ${file.size} bytes`);
-    await pool?.query("UPDATE meetings SET recording_status='recorded',recording_url=$1,next_processing_at=now() WHERE id=$2", [recordingPath, meetingId]);
+    await pool?.query("UPDATE meetings SET recording_status='recorded',recording_url=$1,next_processing_at=now(),processing_error=NULL WHERE id=$2", [actualRecordingPath, meetingId]);
+    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Recording ready for transcription", meetingId, recordingPath: actualRecordingPath, bytes: file.size }));
   } catch (error) { await failRecording(meetingId, error); }
 }
 
