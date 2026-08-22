@@ -35,19 +35,22 @@ services:
 
   - type: worker
     name: common-room-worker
-    runtime: node
+    runtime: docker
     plan: starter
-    buildCommand: npm ci --include=dev && npm run build -w @office/worker
-    startCommand: npm run start -w @office/worker
+    dockerfilePath: ./apps/worker/Dockerfile
     envVars:
-      - key: NODE_VERSION
-        value: "24"
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
         fromDatabase:
           name: common-room-db
           property: connectionString
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
 
 databases:
   - name: common-room-db

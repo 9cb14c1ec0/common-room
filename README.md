@@ -42,6 +42,4 @@ The office dashboard, directory, meeting requests, health endpoint, presence soc
 
 Create an Agora project secured with an App Certificate. Set `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` only on the API service. The browser receives a one-hour channel token; the App Certificate is never sent to it. Calls join with microphone audio only and publish video only after the user enables their camera.
 
-For automatic recording, enable Agora Cloud Recording and set `AGORA_CUSTOMER_ID`, `AGORA_CUSTOMER_SECRET`, `AGORA_RECORDING_STORAGE_VENDOR`, and `AGORA_RECORDING_STORAGE_REGION` on the API service, together with the `OBJECT_STORAGE_*` bucket credentials. When these are absent, calls continue normally without recording.
-
-The worker reads completed recordings directly from private S3-compatible storage and submits them to ElevenLabs Scribe v2. Set `ELEVENLABS_API_KEY`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_REGION`, `OBJECT_STORAGE_ENDPOINT` (when not using AWS), `OBJECT_STORAGE_ACCESS_KEY`, and `OBJECT_STORAGE_SECRET_KEY` on the worker service.
+Automatic recording is self-hosted by the Docker-based Render worker using Agora's Linux Recording Java SDK. Set `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, and `ELEVENLABS_API_KEY` on the worker. It records mixed audio to an ephemeral local MP4, sends that file to ElevenLabs Scribe v2, and deletes it immediately after transcription. No object-storage service is required. A worker restart during an active meeting causes that temporary recording to be lost and the meeting to be marked failed.
