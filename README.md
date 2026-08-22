@@ -41,3 +41,7 @@ The office dashboard, directory, meeting requests, health endpoint, presence soc
 ## Agora
 
 Create an Agora project secured with an App Certificate. Set `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` only on the API service. The browser receives a one-hour channel token; the App Certificate is never sent to it. Calls join with microphone audio only and publish video only after the user enables their camera.
+
+For automatic recording, enable Agora Cloud Recording and set `AGORA_CUSTOMER_ID`, `AGORA_CUSTOMER_SECRET`, `AGORA_RECORDING_STORAGE_VENDOR`, and `AGORA_RECORDING_STORAGE_REGION` on the API service, together with the `OBJECT_STORAGE_*` bucket credentials. When these are absent, calls continue normally without recording.
+
+The worker reads completed recordings directly from private S3-compatible storage and submits them to ElevenLabs Scribe v2. Set `ELEVENLABS_API_KEY`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_REGION`, `OBJECT_STORAGE_ENDPOINT` (when not using AWS), `OBJECT_STORAGE_ACCESS_KEY`, and `OBJECT_STORAGE_SECRET_KEY` on the worker service.

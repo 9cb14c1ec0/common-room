@@ -9,6 +9,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { MeetingRequest, MeetingSummary, Person } from "@office/contracts";
 import { createSession, currentUser, destroySession, hashPassword, verifyPassword } from "./auth.js";
 import { createDatabase, migrate } from "./database.js";
+import { recordingIsConfigured, startAgoraRecording, stopAgoraRecording } from "./recording.js";
 
 const people: Person[] = [
   { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available" },
@@ -247,17 +248,49 @@ export async function buildApp() {
     }
     const authenticated = database ? await currentUser(database, request) : undefined;
     if (database && !authenticated) return reply.code(401).send({ error: "Authentication required" });
-    if (database && authenticated && request.params.meetingId !== "main") {
-      const participant = await database.query("SELECT 1 FROM meeting_participants WHERE meeting_id=$1 AND user_id=$2", [request.params.meetingId, authenticated.id]);
-      if (!participant.rowCount) return reply.code(403).send({ error: "You are not a participant in this meeting" });
-      await database.query("UPDATE meeting_participants SET joined_at=now(),left_at=NULL WHERE meeting_id=$1 AND user_id=$2", [request.params.meetingId, authenticated.id]);
-      await database.query("UPDATE meetings SET status='active',started_at=coalesce(started_at,now()),ended_at=NULL WHERE id=$1", [request.params.meetingId]);
+    let trackedMeetingId = request.params.meetingId;
+    let channelName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 63);
+    if (database && authenticated) {
+      if (request.params.meetingId === "main") {
+        let publicMeeting = await database.query("SELECT id,agora_channel_name FROM meetings WHERE signalwire_room_name LIKE 'common-room-main-%' AND status IN ('waiting','active') ORDER BY created_at DESC LIMIT 1");
+        if (!publicMeeting.rowCount) publicMeeting = await database.query("INSERT INTO meetings(signalwire_room_name,agora_channel_name,status,started_at) VALUES($1,'common-room-main','waiting',now()) RETURNING id,agora_channel_name", [`common-room-main-${randomBytes(10).toString("hex")}`]);
+        trackedMeetingId = publicMeeting.rows[0].id;
+        channelName = publicMeeting.rows[0].agora_channel_name;
+        await database.query("INSERT INTO meeting_participants(meeting_id,user_id,joined_at) VALUES($1,$2,now()) ON CONFLICT(meeting_id,user_id) DO UPDATE SET joined_at=now(),left_at=NULL", [trackedMeetingId, authenticated.id]);
+      } else {
+        const participant = await database.query("SELECT m.agora_channel_name FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.meeting_id=$1 AND p.user_id=$2", [request.params.meetingId, authenticated.id]);
+        if (!participant.rowCount) return reply.code(403).send({ error: "You are not a participant in this meeting" });
+        channelName = participant.rows[0].agora_channel_name ?? channelName;
+        await database.query("UPDATE meetings SET agora_channel_name=coalesce(agora_channel_name,$2) WHERE id=$1", [trackedMeetingId, channelName]);
+        await database.query("UPDATE meeting_participants SET joined_at=now(),left_at=NULL WHERE meeting_id=$1 AND user_id=$2", [trackedMeetingId, authenticated.id]);
+      }
+      await database.query("UPDATE meetings SET status='active',started_at=coalesce(started_at,now()),ended_at=NULL WHERE id=$1", [trackedMeetingId]);
     }
-    const channelName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 63);
     const uid = authenticated?.id ?? `guest-${randomBytes(12).toString("hex")}`;
     const expiresInSeconds = 60 * 60;
     const token = AgoraToken.RtcTokenBuilder.buildTokenWithUserAccount(appId, appCertificate, channelName, uid, AgoraToken.RtcRole.PUBLISHER, expiresInSeconds, expiresInSeconds);
-    return { appId, token, channelName, uid, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
+    return { appId, token, channelName, uid, meetingId: trackedMeetingId, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
+  });
+
+  app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/recording/start", async (request, reply) => {
+    if (!database) return { status: "disabled" };
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    if (!recordingIsConfigured()) return { status: "disabled" };
+    const claimed = await database.query("UPDATE meetings m SET recording_status='starting' FROM meeting_participants p WHERE m.id=$1 AND p.meeting_id=m.id AND p.user_id=$2 AND m.recording_status IN ('not_started','failed') RETURNING m.agora_channel_name", [request.params.meetingId, user.id]);
+    if (!claimed.rowCount) {
+      const current = await database.query("SELECT recording_status FROM meetings WHERE id=$1", [request.params.meetingId]);
+      return { status: current.rows[0]?.recording_status ?? "unavailable" };
+    }
+    try {
+      const session = await startAgoraRecording(claimed.rows[0].agora_channel_name, request.params.meetingId);
+      await database.query("UPDATE meetings SET recording_resource_id=$1,recording_sid=$2,recording_uid=$3,recording_status='recording' WHERE id=$4", [session.resourceId, session.sid, session.uid, request.params.meetingId]);
+      return { status: "recording" };
+    } catch (error) {
+      request.log.error({ error }, "Unable to start Agora recording");
+      await database.query("UPDATE meetings SET recording_status='failed' WHERE id=$1", [request.params.meetingId]);
+      return reply.code(502).send({ error: "Unable to start meeting recording" });
+    }
   });
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/leave", async (request, reply) => {
@@ -267,7 +300,17 @@ export async function buildApp() {
     const result = await database.query("UPDATE meeting_participants SET left_at=now() WHERE meeting_id=$1 AND user_id=$2 RETURNING meeting_id", [request.params.meetingId, user.id]);
     if (!result.rowCount) return reply.code(403).send({ error: "You are not a participant in this meeting" });
     const active = await database.query("SELECT 1 FROM meeting_participants WHERE meeting_id=$1 AND joined_at IS NOT NULL AND left_at IS NULL LIMIT 1", [request.params.meetingId]);
-    if (!active.rowCount) await database.query("UPDATE meetings SET status='processing',ended_at=now() WHERE id=$1", [request.params.meetingId]);
+    if (!active.rowCount) {
+      const meeting = await database.query("UPDATE meetings SET status='processing',ended_at=now() WHERE id=$1 RETURNING agora_channel_name,recording_resource_id,recording_sid,recording_uid,recording_status", [request.params.meetingId]);
+      const row = meeting.rows[0];
+      if (row?.recording_status === "recording") try {
+        const files = await stopAgoraRecording(row.agora_channel_name, { resourceId: row.recording_resource_id, sid: row.recording_sid, uid: row.recording_uid });
+        await database.query("UPDATE meetings SET recording_status='recorded',recording_files=$1 WHERE id=$2", [JSON.stringify(files), request.params.meetingId]);
+      } catch (error) {
+        request.log.error({ error }, "Unable to stop Agora recording");
+        await database.query("UPDATE meetings SET recording_status='failed' WHERE id=$1", [request.params.meetingId]);
+      }
+    }
     return { ok: true };
   });
 

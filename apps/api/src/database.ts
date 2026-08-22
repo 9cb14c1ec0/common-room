@@ -18,7 +18,7 @@ export function createDatabase(): Database | undefined {
 export async function migrate(database: Database) {
   await database.query("CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const migrations = [{ name: "001_initial", file: "schema.sql" }, { name: "002_invitations", file: "002_invitations.sql" }, { name: "003_request_meetings", file: "003_request_meetings.sql" }];
+  const migrations = [{ name: "001_initial", file: "schema.sql" }, { name: "002_invitations", file: "002_invitations.sql" }, { name: "003_request_meetings", file: "003_request_meetings.sql" }, { name: "004_recordings", file: "004_recordings.sql" }];
   for (const migration of migrations) {
     const applied = await database.query("SELECT 1 FROM schema_migrations WHERE name = $1", [migration.name]);
     if (applied.rowCount) continue;

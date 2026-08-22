@@ -3,12 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "dependencies": { "@types/node": "^24.3.0" },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@types/node": "^24.3.0",
+    "pg": "^8.23.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": { "tsx": "^4.20.5", "typescript": "^5.9.2" }
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
 }

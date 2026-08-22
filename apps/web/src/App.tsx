@@ -154,7 +154,8 @@ export function App() {
     try {
       const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
       if (!response.ok) throw new Error("Agora token unavailable");
-      const { appId, token, channelName, uid, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; displayName: string };
+      const { appId, token, channelName, uid, meetingId: trackedMeetingId, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; meetingId: string; displayName: string };
+      setMeetingId(trackedMeetingId);
       const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
       const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
       const memberName = (id: string) => people.find((person) => person.id === id)?.name ?? "Participant";
@@ -179,6 +180,7 @@ export function App() {
       await client.join(appId, channelName, token, uid);
       const microphone = await AgoraRTC.createMicrophoneAudioTrack();
       await client.publish(microphone);
+      void fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
       agoraClientRef.current = client;
       roomUidRef.current = uid;
       microphoneTrackRef.current = microphone;
