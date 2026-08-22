@@ -184,8 +184,7 @@ async function analyzeTranscript(transcript: unknown, participants: Array<{ id: 
             description: { type: "string" }, assigneeName: { type: ["string", "null"] }, dueDate: { type: ["string", "null"], description: "ISO 8601 date if explicitly stated" }, sourceTimestampSeconds: { type: ["number", "null"] }, confidence: { type: "number", minimum: 0, maximum: 1 }
           } } }
         }
-      } } },
-      temperature: 0.1
+      } } }
     })
   });
   const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }>; error?: unknown };
