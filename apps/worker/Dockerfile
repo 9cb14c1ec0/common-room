@@ -3,7 +3,7 @@ WORKDIR /app
 COPY . .
 RUN npm ci --include=dev && npm run build -w @office/worker
 
-FROM maven:3.9-eclipse-temurin-21 AS recorder-build
+FROM maven:3.9-eclipse-temurin-17 AS recorder-build
 ARG AGORA_RECORDER_COMMIT=26dc261d29aac98ee954857666fa7e877d79c249
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/AgoraIO-Extensions/Agora-Recording-Java-SDK.git /src/agora-recorder && cd /src/agora-recorder && git checkout "$AGORA_RECORDER_COMMIT"
