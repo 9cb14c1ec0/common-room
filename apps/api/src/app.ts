@@ -96,16 +96,17 @@ export async function buildApp() {
     return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence })) };
   });
   app.patch("/api/presence", async (request, reply) => {
-    const input = z.object({ doorOpen: z.boolean() }).parse(request.body);
+    const input = z.union([z.object({ doorOpen: z.boolean() }), z.object({ status: z.enum(["available", "busy", "do_not_disturb"]) })]).parse(request.body);
+    const presence = "doorOpen" in input ? input.doorOpen ? "available" : "do_not_disturb" : input.status;
     if (!database) {
       const person = people.find((item) => item.id === "maya");
-      if (person) person.presence = input.doorOpen ? "available" : "do_not_disturb";
-      return { doorOpen: input.doorOpen };
+      if (person) person.presence = presence;
+      return { presence };
     }
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
-    await database.query("UPDATE users SET presence=$1 WHERE id=$2", [input.doorOpen ? "available" : "do_not_disturb", user.id]);
-    return { doorOpen: input.doorOpen };
+    await database.query("UPDATE users SET presence=$1 WHERE id=$2", [presence, user.id]);
+    return { presence };
   });
   app.post("/api/users", async (request, reply) => {
     if (!database) return reply.code(400).send({ error: "Database is not configured" });
@@ -165,8 +166,9 @@ export async function buildApp() {
   });
   app.get("/api/meetings", async (request, reply) => {
     if (!database) return { meetings };
-    if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query("SELECT id, coalesce(summary, 'Processing is not complete.') summary, started_at, ended_at FROM meetings ORDER BY created_at DESC LIMIT 30");
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("SELECT m.id, coalesce(m.summary, 'Processing is not complete.') summary, m.started_at, m.ended_at FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 ORDER BY m.created_at DESC LIMIT 30", [user.id]);
     return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, actionItemCount: 0 })) };
   });
   app.get("/api/requests", async (request, reply) => {
@@ -245,11 +247,28 @@ export async function buildApp() {
     }
     const authenticated = database ? await currentUser(database, request) : undefined;
     if (database && !authenticated) return reply.code(401).send({ error: "Authentication required" });
+    if (database && authenticated && request.params.meetingId !== "main") {
+      const participant = await database.query("SELECT 1 FROM meeting_participants WHERE meeting_id=$1 AND user_id=$2", [request.params.meetingId, authenticated.id]);
+      if (!participant.rowCount) return reply.code(403).send({ error: "You are not a participant in this meeting" });
+      await database.query("UPDATE meeting_participants SET joined_at=now(),left_at=NULL WHERE meeting_id=$1 AND user_id=$2", [request.params.meetingId, authenticated.id]);
+      await database.query("UPDATE meetings SET status='active',started_at=coalesce(started_at,now()),ended_at=NULL WHERE id=$1", [request.params.meetingId]);
+    }
     const channelName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 63);
     const uid = authenticated?.id ?? `guest-${randomBytes(12).toString("hex")}`;
     const expiresInSeconds = 60 * 60;
     const token = AgoraToken.RtcTokenBuilder.buildTokenWithUserAccount(appId, appCertificate, channelName, uid, AgoraToken.RtcRole.PUBLISHER, expiresInSeconds, expiresInSeconds);
     return { appId, token, channelName, uid, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
+  });
+
+  app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/leave", async (request, reply) => {
+    if (!database || request.params.meetingId === "main") return { ok: true };
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("UPDATE meeting_participants SET left_at=now() WHERE meeting_id=$1 AND user_id=$2 RETURNING meeting_id", [request.params.meetingId, user.id]);
+    if (!result.rowCount) return reply.code(403).send({ error: "You are not a participant in this meeting" });
+    const active = await database.query("SELECT 1 FROM meeting_participants WHERE meeting_id=$1 AND joined_at IS NOT NULL AND left_at IS NULL LIMIT 1", [request.params.meetingId]);
+    if (!active.rowCount) await database.query("UPDATE meetings SET status='processing',ended_at=now() WHERE id=$1", [request.params.meetingId]);
+    return { ok: true };
   });
 
   app.get("/api/presence", { websocket: true }, (socket) => {

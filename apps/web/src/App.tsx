@@ -149,6 +149,7 @@ export function App() {
     setMeetingId(roomId);
     setView("room");
     setRoomMode("loading");
+    void fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "busy" }) });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     try {
       const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
@@ -199,6 +200,7 @@ export function App() {
   }
 
   function leaveRoom() {
+    const leavingMeetingId = meetingId;
     const client = agoraClientRef.current;
     const tracks = [microphoneTrackRef.current, cameraTrackRef.current].filter((track): track is IMicrophoneAudioTrack | ICameraVideoTrack => Boolean(track));
     if (client) void client.unpublish(tracks).catch(() => undefined).then(() => client.leave());
@@ -215,6 +217,10 @@ export function App() {
     setCameraOn(false);
     setMicOn(true);
     setView("office");
+    void Promise.all([
+      fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: doorOpen ? "available" : "do_not_disturb" }) }),
+      fetch(`${apiUrl}/api/meetings/${leavingMeetingId}/leave`, { method: "POST", credentials: "include" })
+    ]).then(() => loadOfficeData()).catch(() => undefined);
   }
 
   async function toggleMicrophone() {
