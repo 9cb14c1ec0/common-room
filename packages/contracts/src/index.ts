@@ -25,4 +25,12 @@ export interface MeetingSummary {
   participants: Person[];
   summary: string;
   actionItemCount: number;
+  actionItems: Array<{
+    id: string;
+    description: string;
+    assigneeName: string | null;
+    dueAt: string | null;
+    confidence: number | null;
+    status: "proposed" | "accepted" | "dismissed" | "completed";
+  }>;
 }

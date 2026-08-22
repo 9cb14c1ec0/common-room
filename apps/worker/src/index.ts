@@ -10,6 +10,13 @@ const recorderJar = process.env.AGORA_RECORDER_JAR ?? "/opt/agora/agora-example.
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined, max: 3 }) : undefined;
 const recorders = new Map<string, { child: ChildProcessWithoutNullStreams; recordingPath: string; stopping: boolean }>();
 let processingTranscript = false;
+let processingSummary = false;
+
+interface MeetingAnalysis {
+  summary: string;
+  decisions: string[];
+  actionItems: Array<{ description: string; assigneeName: string | null; dueDate: string | null; sourceTimestampSeconds: number | null; confidence: number }>;
+}
 
 function recorderToken(channelName: string, uid: string) {
   const appId = process.env.AGORA_APP_ID;
@@ -115,13 +122,83 @@ async function processNextTranscript() {
   } finally { processingTranscript = false; }
 }
 
+async function analyzeTranscript(transcript: unknown, participants: Array<{ id: string; name: string }>): Promise<MeetingAnalysis> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured");
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", "x-title": "Common Room" },
+    body: JSON.stringify({
+      model: process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna",
+      messages: [
+        { role: "system", content: "Analyze an internal company meeting transcript. Be concise and factual. Propose an action item only when the transcript contains a genuine commitment, request, or clearly assigned next step. Never invent an assignee or due date. Use only participant names from the supplied list; otherwise use null. Timestamps must point to supporting transcript evidence." },
+        { role: "user", content: JSON.stringify({ participants: participants.map((item) => item.name), transcript }) }
+      ],
+      provider: { require_parameters: true },
+      response_format: { type: "json_schema", json_schema: { name: "meeting_analysis", strict: true, schema: {
+        type: "object", additionalProperties: false, required: ["summary", "decisions", "actionItems"],
+        properties: {
+          summary: { type: "string" },
+          decisions: { type: "array", items: { type: "string" } },
+          actionItems: { type: "array", items: { type: "object", additionalProperties: false, required: ["description", "assigneeName", "dueDate", "sourceTimestampSeconds", "confidence"], properties: {
+            description: { type: "string" }, assigneeName: { type: ["string", "null"] }, dueDate: { type: ["string", "null"], description: "ISO 8601 date if explicitly stated" }, sourceTimestampSeconds: { type: ["number", "null"] }, confidence: { type: "number", minimum: 0, maximum: 1 }
+          } } }
+        }
+      } } },
+      temperature: 0.1
+    })
+  });
+  const payload = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }>; error?: unknown };
+  const content = payload.choices?.[0]?.message?.content;
+  if (!response.ok || !content) throw new Error(`OpenRouter analysis failed (${response.status}): ${JSON.stringify(payload.error ?? payload)}`);
+  const analysis = JSON.parse(content) as MeetingAnalysis;
+  if (!analysis.summary || !Array.isArray(analysis.decisions) || !Array.isArray(analysis.actionItems)) throw new Error("OpenRouter returned an invalid meeting analysis");
+  return analysis;
+}
+
+async function processNextSummary() {
+  if (!pool || processingSummary) return;
+  processingSummary = true;
+  let meeting: { id: string; transcript: unknown; transcription_attempts: number; participants: Array<{ id: string; name: string }> } | undefined;
+  try {
+    const claimed = await pool.query(`UPDATE meetings SET recording_status='summarizing',processing_error=NULL WHERE id=(SELECT id FROM meetings WHERE recording_status='transcribed' AND summary IS NULL AND coalesce(next_processing_at,now())<=now() ORDER BY ended_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,transcript,transcription_attempts`);
+    const row = claimed.rows[0] as Omit<NonNullable<typeof meeting>, "participants"> | undefined;
+    if (!row) return;
+    const participantRows = await pool.query("SELECT u.id,u.display_name name FROM meeting_participants p JOIN users u ON u.id=p.user_id WHERE p.meeting_id=$1 ORDER BY u.display_name", [row.id]);
+    meeting = { ...row, participants: participantRows.rows };
+    const analysis = await analyzeTranscript(meeting.transcript, meeting.participants);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM action_items WHERE meeting_id=$1 AND status='proposed'", [meeting.id]);
+      for (const item of analysis.actionItems.filter((candidate) => candidate.description.trim())) {
+        const assignee = item.assigneeName ? meeting.participants.find((participant) => participant.name.localeCompare(item.assigneeName!, undefined, { sensitivity: "base" }) === 0) : undefined;
+        const dueAt = item.dueDate && !Number.isNaN(Date.parse(item.dueDate)) ? new Date(item.dueDate) : null;
+        await client.query("INSERT INTO action_items(meeting_id,assignee_id,description,source_timestamp_seconds,confidence,due_at) VALUES($1,$2,$3,$4,$5,$6)", [meeting.id, assignee?.id ?? null, item.description.trim(), item.sourceTimestampSeconds === null ? null : Math.max(0, Math.round(item.sourceTimestampSeconds)), Math.max(0, Math.min(1, item.confidence)), dueAt]);
+      }
+      const summary = analysis.decisions.length ? `${analysis.summary}\n\nDecisions:\n${analysis.decisions.map((decision) => `• ${decision}`).join("\n")}` : analysis.summary;
+      await client.query("UPDATE meetings SET summary=$1,status='complete',recording_status='analyzed',processing_error=NULL WHERE id=$2", [summary, meeting.id]);
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting summarized", meetingId: meeting.id, actionItemCount: analysis.actionItems.length }));
+  } catch (error) {
+    if (meeting) {
+      const attempts = meeting.transcription_attempts + 1;
+      await pool.query("UPDATE meetings SET recording_status=$1,transcription_attempts=$2,next_processing_at=now()+($3::text || ' minutes')::interval,processing_error=$4,status=CASE WHEN $1::text='failed' THEN 'failed' ELSE status END WHERE id=$5", [attempts >= 5 ? "failed" : "transcribed", attempts, Math.min(60, 2 ** attempts), error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000), meeting.id]);
+    }
+    console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Meeting analysis failed", meetingId: meeting?.id, error: error instanceof Error ? error.message : String(error) }));
+  } finally { processingSummary = false; }
+}
+
 async function tick() {
-  try { await stopFinishedMeetings(); await startNextRecording(); await processNextTranscript(); }
+  try { await stopFinishedMeetings(); await startNextRecording(); await processNextTranscript(); await processNextSummary(); }
   catch (error) { console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Worker tick failed", error: error instanceof Error ? error.message : String(error) })); }
 }
 
 console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Self-hosted recorder worker started", intervalMs, database: Boolean(pool) }));
 void pool?.query("UPDATE meetings SET recording_status='failed',processing_error='Recorder worker restarted before the temporary recording completed' WHERE recording_status IN ('starting','recording','transcribing')");
+void pool?.query("UPDATE meetings SET recording_status='transcribed',processing_error='Analysis requeued after worker restart',next_processing_at=now() WHERE recording_status='summarizing'");
 const timer = setInterval(() => void tick(), intervalMs);
 void tick();
 

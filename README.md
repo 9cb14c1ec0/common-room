@@ -43,3 +43,5 @@ The office dashboard, directory, meeting requests, health endpoint, presence soc
 Create an Agora project secured with an App Certificate. Set `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` only on the API service. The browser receives a one-hour channel token; the App Certificate is never sent to it. Calls join with microphone audio only and publish video only after the user enables their camera.
 
 Automatic recording is self-hosted by the Docker-based Render worker using Agora's Linux Recording Java SDK. Set `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, and `ELEVENLABS_API_KEY` on the worker. It records mixed audio to an ephemeral local MP4, sends that file to ElevenLabs Scribe v2, and deletes it immediately after transcription. No object-storage service is required. A worker restart during an active meeting causes that temporary recording to be lost and the meeting to be marked failed.
+
+Set `OPENROUTER_API_KEY` on the worker to generate meeting summaries, decisions, and proposed action items. `OPENROUTER_MODEL` defaults to `openai/gpt-5.6-luna`. Assignees are accepted only when the returned name matches a real meeting participant.
