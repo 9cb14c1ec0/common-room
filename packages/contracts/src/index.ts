@@ -17,6 +17,19 @@ export interface MeetingRequest {
   status: "pending" | "accepted" | "declined" | "cancelled";
 }
 
+export interface ActionItem {
+  id: string;
+  meetingId: string;
+  meetingTitle: string;
+  meetingOccurredAt: string | null;
+  description: string;
+  assigneeId: string | null;
+  assigneeName: string | null;
+  dueAt: string | null;
+  confidence: number | null;
+  status: "proposed" | "accepted" | "dismissed" | "complete";
+}
+
 export interface MeetingSummary {
   id: string;
   title: string;
@@ -27,12 +40,5 @@ export interface MeetingSummary {
   processingStatus: string;
   processingError: string | null;
   actionItemCount: number;
-  actionItems: Array<{
-    id: string;
-    description: string;
-    assigneeName: string | null;
-    dueAt: string | null;
-    confidence: number | null;
-    status: "proposed" | "accepted" | "dismissed" | "completed";
-  }>;
+  actionItems: ActionItem[];
 }

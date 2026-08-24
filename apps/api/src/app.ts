@@ -167,14 +167,42 @@ export async function buildApp() {
       throw error;
     } finally { client.release(); }
   });
-  app.get("/api/meetings", async (request, reply) => {
+  app.get<{ Querystring: { q?: string } }>("/api/meetings", async (request, reply) => {
     if (!database) return { meetings };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const query = z.string().trim().max(120).optional().parse(request.query.q) ?? "";
     const result = await database.query(`SELECT m.id,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,m.recording_status,m.processing_error,
-      coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'description',a.description,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id),'[]'::jsonb) action_items
-      FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 ORDER BY m.created_at DESC LIMIT 30`, [user.id]);
+      coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'meetingId',m.id,'meetingTitle','Common Room meeting','meetingOccurredAt',m.started_at,'description',a.description,'assigneeId',a.assignee_id,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id),'[]'::jsonb) action_items
+      FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 AND ($2='' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
     return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
+  });
+  app.get("/api/action-items/mine", async (request, reply) => {
+    if (!database) return { actionItems: [] };
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query(`SELECT a.id,a.meeting_id,a.description,a.assignee_id,a.due_at,a.confidence::float,a.status,u.display_name assignee_name,m.started_at
+      FROM action_items a JOIN meetings m ON m.id=a.meeting_id LEFT JOIN users u ON u.id=a.assignee_id
+      WHERE a.assignee_id=$1 AND a.status<>'dismissed' ORDER BY a.status='complete',a.due_at NULLS LAST,a.created_at DESC`, [user.id]);
+    return { actionItems: result.rows.map((row) => ({ id: row.id, meetingId: row.meeting_id, meetingTitle: "Common Room meeting", meetingOccurredAt: row.started_at, description: row.description, assigneeId: row.assignee_id, assigneeName: row.assignee_name, dueAt: row.due_at, confidence: row.confidence, status: row.status })) };
+  });
+  app.patch<{ Params: { actionItemId: string } }>("/api/action-items/:actionItemId", async (request, reply) => {
+    if (!database) return reply.code(404).send({ error: "Action item not found" });
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const input = z.object({ description: z.string().trim().min(1).max(500).optional(), dueAt: z.string().datetime().nullable().optional(), status: z.enum(["proposed", "accepted", "complete", "dismissed"]).optional() }).refine((value) => Object.keys(value).length > 0).parse(request.body);
+    const existing = await database.query(`SELECT a.assignee_id FROM action_items a JOIN meeting_participants p ON p.meeting_id=a.meeting_id WHERE a.id=$1 AND p.user_id=$2`, [request.params.actionItemId, user.id]);
+    if (!existing.rowCount) return reply.code(404).send({ error: "Action item not found" });
+    if ((input.status === "accepted" || input.status === "complete") && existing.rows[0].assignee_id && existing.rows[0].assignee_id !== user.id) return reply.code(403).send({ error: "Only the assignee can accept or complete this item" });
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    if (input.description !== undefined) { values.push(input.description); fields.push(`description=$${values.length}`); }
+    if (input.dueAt !== undefined) { values.push(input.dueAt); fields.push(`due_at=$${values.length}::timestamptz`); }
+    if (input.status !== undefined) { values.push(input.status); fields.push(`status=$${values.length}::action_item_status`); }
+    if (input.status === "accepted" && !existing.rows[0].assignee_id) { values.push(user.id); fields.push(`assignee_id=$${values.length}`); }
+    values.push(request.params.actionItemId);
+    const updated = await database.query(`UPDATE action_items SET ${fields.join(",")} WHERE id=$${values.length} RETURNING id`, values);
+    return { id: updated.rows[0].id };
   });
   app.get("/api/requests", async (request, reply) => {
     if (!database) return { requests };

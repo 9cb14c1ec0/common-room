@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, Mic, MicOff, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
-import type { MeetingSummary, Person } from "@office/contracts";
+import { ArrowLeft, ArrowUpRight, Bell, Check, Clock3, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, Pencil, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
+import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
 const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
@@ -20,7 +20,7 @@ export function App() {
   const [sentTo, setSentTo] = useState<string>();
   const [doorOpen, setDoorOpen] = useState(true);
   const [doorSaving, setDoorSaving] = useState(false);
-  const [view, setView] = useState<"office" | "requests" | "notes" | "room">("office");
+  const [view, setView] = useState<"office" | "requests" | "notes" | "actions" | "room">("office");
   const [requests, setRequests] = useState<RequestView[]>([]);
   const [toast, setToast] = useState<string>();
   const [micOn, setMicOn] = useState(true);
@@ -45,6 +45,9 @@ export function App() {
   const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
+  const [myActionItems, setMyActionItems] = useState<ActionItem[]>([]);
+  const [noteSearch, setNoteSearch] = useState("");
+  const [editingAction, setEditingAction] = useState<{ id: string; description: string; dueAt: string }>();
   const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -58,10 +61,11 @@ export function App() {
     const refreshRealtime = async (announce: boolean) => {
       try {
         const options = { credentials: "include" as const };
-        const [peopleResponse, requestsResponse, meetingsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options), fetch(`${apiUrl}/api/meetings`, options)]);
+        const [peopleResponse, requestsResponse, meetingsResponse, actionsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options), fetch(`${apiUrl}/api/meetings${noteSearch ? `?q=${encodeURIComponent(noteSearch)}` : ""}`, options), fetch(`${apiUrl}/api/action-items/mine`, options)]);
         if (!active) return;
         if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
         if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
+        if (actionsResponse.ok) setMyActionItems((await actionsResponse.json()).actionItems);
         if (requestsResponse.ok) {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
           if (announce) for (const item of nextRequests) {
@@ -77,7 +81,13 @@ export function App() {
     void refreshRealtime(false);
     const interval = window.setInterval(() => void refreshRealtime(true), 4000);
     return () => { active = false; window.clearInterval(interval); };
-  }, [auth?.user?.id, inviteToken]);
+  }, [auth?.user?.id, inviteToken, noteSearch]);
+
+  useEffect(() => {
+    if (!auth?.user || view !== "notes") return;
+    const timer = window.setTimeout(() => void loadMeetingNotes(noteSearch), 250);
+    return () => window.clearTimeout(timer);
+  }, [noteSearch, view, auth?.user?.id]);
 
   async function refreshSession() {
     try {
@@ -91,7 +101,7 @@ export function App() {
 
   async function loadOfficeData(currentUserId = auth?.user?.id) {
     const options = { credentials: "include" as const };
-    const [peopleResponse, meetingsResponse, requestsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/meetings`, options), fetch(`${apiUrl}/api/requests`, options)]);
+    const [peopleResponse, meetingsResponse, requestsResponse, actionsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/meetings`, options), fetch(`${apiUrl}/api/requests`, options), fetch(`${apiUrl}/api/action-items/mine`, options)]);
     if (peopleResponse.ok) {
       const loadedPeople: Person[] = (await peopleResponse.json()).people;
       setPeople(loadedPeople);
@@ -100,6 +110,21 @@ export function App() {
     }
     if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
     if (requestsResponse.ok) setRequests((await requestsResponse.json()).requests);
+    if (actionsResponse.ok) setMyActionItems((await actionsResponse.json()).actionItems);
+  }
+
+  async function loadMeetingNotes(query: string) {
+    const response = await fetch(`${apiUrl}/api/meetings${query ? `?q=${encodeURIComponent(query)}` : ""}`, { credentials: "include" });
+    if (response.ok) setMeetings((await response.json()).meetings);
+  }
+
+  async function updateActionItem(item: ActionItem, changes: { description?: string; dueAt?: string | null; status?: ActionItem["status"] }) {
+    const response = await fetch(`${apiUrl}/api/action-items/${item.id}`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify(changes) });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to update the action item"); return; }
+    setEditingAction(undefined);
+    showToast(changes.status === "complete" ? "Action item completed" : changes.status === "dismissed" ? "Action item dismissed" : changes.status === "accepted" ? "Action item accepted" : "Action item updated");
+    await loadOfficeData();
+    if (noteSearch) await loadMeetingNotes(noteSearch);
   }
 
   async function submitAuth(event: React.FormEvent) {
@@ -313,6 +338,23 @@ export function App() {
     showToast("Request dismissed");
   }
 
+  function renderActionItem(item: ActionItem, showMeeting = false) {
+    const editing = editingAction?.id === item.id;
+    return <li className={`action-item status-${item.status}`} key={item.id}>
+      {editing ? <form className="action-edit" onSubmit={(event) => { event.preventDefault(); void updateActionItem(item, { description: editingAction.description, dueAt: editingAction.dueAt ? new Date(`${editingAction.dueAt}T12:00:00`).toISOString() : null }); }}>
+        <input value={editingAction.description} onChange={(event) => setEditingAction({ ...editingAction, description: event.target.value })} required maxLength={500} aria-label="Action item description" />
+        <input type="date" value={editingAction.dueAt} onChange={(event) => setEditingAction({ ...editingAction, dueAt: event.target.value })} aria-label="Due date" />
+        <button type="submit" className="primary">Save</button><button type="button" onClick={() => setEditingAction(undefined)}>Cancel</button>
+      </form> : <><div className="action-copy"><strong>{item.description}</strong><small>{showMeeting ? `${item.meetingTitle}${item.meetingOccurredAt ? ` · ${new Date(item.meetingOccurredAt).toLocaleDateString()}` : ""} · ` : ""}{item.assigneeName ?? "Unassigned"}{item.dueAt ? ` · due ${new Date(item.dueAt).toLocaleDateString()}` : ""}<span className="action-status">{item.status}</span></small></div><div className="action-buttons">
+        {item.status === "proposed" && <button className="primary" onClick={() => void updateActionItem(item, { status: "accepted" })}><Check size={14} /> Accept</button>}
+        {item.status === "accepted" && <button className="primary" onClick={() => void updateActionItem(item, { status: "complete" })}><Check size={14} /> Complete</button>}
+        {item.status === "complete" && <button onClick={() => void updateActionItem(item, { status: "accepted" })}>Reopen</button>}
+        {item.status !== "dismissed" && <button onClick={() => setEditingAction({ id: item.id, description: item.description, dueAt: item.dueAt ? item.dueAt.slice(0, 10) : "" })}><Pencil size={14} /> Edit</button>}
+        {item.status !== "dismissed" && item.status !== "complete" && <button onClick={() => void updateActionItem(item, { status: "dismissed" })}><X size={14} /> Dismiss</button>}
+      </div></>}
+    </li>;
+  }
+
   if (inviteToken) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void acceptInvite(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">YOU’RE INVITED</p><h1>Join Common Room</h1>{invitation ? <><p>Create your account for <strong>{invitation.email}</strong>{invitation.title ? ` as ${invitation.title}` : ""}.</p><label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={10} autoComplete="new-password" /></label><button type="submit">Accept invitation</button></> : <p>{authError ?? "Checking your invitation…"}</p>}</form></div>;
 
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
@@ -345,12 +387,13 @@ export function App() {
         <button className={view === "office" ? "active" : ""} onClick={() => setView("office")}><Users size={18} /> Office</button>
         <button className={view === "requests" ? "active" : ""} onClick={() => setView("requests")}><Bell size={18} /> Requests {requests.filter((item) => item.status === "pending").length > 0 && <span className="badge">{requests.filter((item) => item.status === "pending").length}</span>}</button>
         <button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}><History size={18} /> Meeting notes</button>
+        <button className={view === "actions" ? "active" : ""} onClick={() => setView("actions")}><ListChecks size={18} /> My action items {myActionItems.filter((item) => item.status !== "complete").length > 0 && <span className="badge">{myActionItems.filter((item) => item.status !== "complete").length}</span>}</button>
       </nav>
       <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div></div>
     </aside>
 
     <main>
-      <header><div><p className="eyebrow">FRIDAY, AUGUST 21</p><h1>{view === "office" ? "Your office" : view === "requests" ? "Meeting requests" : "Meeting notes"}</h1></div><button className="icon-button" onClick={() => showToast("Search is coming in the next slice.")}><Search size={20} /></button></header>
+      <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "office" ? "Your office" : view === "requests" ? "Meeting requests" : view === "actions" ? "My action items" : "Meeting notes"}</h1></div>{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}</header>
 
       {view === "office" && <><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> YOUR DOOR IS {doorOpen ? "OPEN" : "CLOSED"}</span><h2>{doorOpen ? "Ready when you are." : "Taking some focus time."}</h2><p>{doorOpen ? "People can ask to meet. You’ll always choose whether to join." : "New meeting requests are paused until you open your door."}</p></div>
@@ -376,7 +419,8 @@ export function App() {
         </article>
       </section></>}
       {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <>{item.status === "accepted" && item.meetingId && <button className="accept" onClick={() => void enterRoom(item.meetingId)}><Video size={16}/> Join</button>}<button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button></>}</div></article>)}</section>}
-      {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} proposed action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => <li key={item.id}><strong>{item.description}</strong><small>{item.assigneeName ?? "Unassigned"}{item.dueAt ? ` · due ${new Date(item.dueAt).toLocaleDateString()}` : ""}{item.confidence !== null ? ` · ${Math.round(item.confidence * 100)}% confidence` : ""}</small></li>)}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>No meeting notes yet</h3></div>}</section>}
+      {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => renderActionItem(item))}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>{noteSearch ? "No matching meeting notes" : "No meeting notes yet"}</h3>{noteSearch && <p>Try a different word or phrase.</p>}</div>}</section>}
+      {view === "actions" && <section className="panel-list"><p className="panel-intro">Accept proposed work, adjust its wording or due date, and mark it complete when you’re done.</p>{myActionItems.length ? <ul className="action-items task-list">{myActionItems.map((item) => renderActionItem(item, true))}</ul> : <div className="empty-state"><ListChecks size={28} /><h3>No action items assigned to you</h3><p>Accepted proposals and assigned next steps will appear here.</p></div>}</section>}
     </main>
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}
   </div>;
