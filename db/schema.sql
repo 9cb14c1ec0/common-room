@@ -29,6 +29,7 @@ CREATE TABLE meeting_requests (
 CREATE TABLE meetings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   title text NOT NULL DEFAULT 'Common Room meeting',
+  is_private boolean NOT NULL DEFAULT false,
   signalwire_room_name text NOT NULL UNIQUE,
   status meeting_status NOT NULL DEFAULT 'waiting',
   started_at timestamptz,

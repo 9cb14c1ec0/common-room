@@ -174,7 +174,7 @@ export async function buildApp() {
     const query = z.string().trim().max(120).optional().parse(request.query.q) ?? "";
     const result = await database.query(`SELECT m.id,m.title,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,m.recording_status,m.processing_error,
       coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'meetingId',m.id,'meetingTitle',m.title,'meetingOccurredAt',m.started_at,'description',a.description,'assigneeId',a.assignee_id,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.status='complete',a.due_at NULLS LAST,a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id AND a.status<>'dismissed'),'[]'::jsonb) action_items
-      FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 AND ($2='' OR m.title ILIKE '%'||$2||'%' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.status<>'dismissed' AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
+      FROM meetings m WHERE (m.is_private=false OR EXISTS(SELECT 1 FROM meeting_participants access_participant WHERE access_participant.meeting_id=m.id AND access_participant.user_id=$1)) AND ($2='' OR m.title ILIKE '%'||$2||'%' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.status<>'dismissed' AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
     return { meetings: result.rows.map((row) => ({ id: row.id, title: row.title, occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
   });
   app.get("/api/action-items/mine", async (request, reply) => {
@@ -191,7 +191,7 @@ export async function buildApp() {
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     const input = z.object({ description: z.string().trim().min(1).max(500).optional(), dueAt: z.string().datetime().nullable().optional(), status: z.enum(["proposed", "accepted", "complete", "dismissed"]).optional() }).refine((value) => Object.keys(value).length > 0).parse(request.body);
-    const existing = await database.query(`SELECT a.assignee_id FROM action_items a JOIN meeting_participants p ON p.meeting_id=a.meeting_id WHERE a.id=$1 AND p.user_id=$2`, [request.params.actionItemId, user.id]);
+    const existing = await database.query(`SELECT a.assignee_id FROM action_items a JOIN meetings m ON m.id=a.meeting_id WHERE a.id=$1 AND (m.is_private=false OR EXISTS(SELECT 1 FROM meeting_participants p WHERE p.meeting_id=m.id AND p.user_id=$2))`, [request.params.actionItemId, user.id]);
     if (!existing.rowCount) return reply.code(404).send({ error: "Action item not found" });
     if ((input.status === "accepted" || input.status === "complete") && existing.rows[0].assignee_id && existing.rows[0].assignee_id !== user.id) return reply.code(403).send({ error: "Only the assignee can accept or complete this item" });
     const fields: string[] = [];
@@ -252,7 +252,7 @@ export async function buildApp() {
       return { status: input.status };
     }
     const roomName = `meeting-${request.params.requestId}`;
-    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,status,started_at) VALUES($1,$2,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`]);
+    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,status,started_at) VALUES($1,$2,true,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
     return { status: input.status, meetingId: meeting.rows[0].id };
