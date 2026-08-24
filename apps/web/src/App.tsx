@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, Pencil, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
-import type { IAgoraRTCClient, ICameraVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
+import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
 const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
@@ -27,11 +27,15 @@ export function App() {
   const [cameraOn, setCameraOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const agoraVideoRef = useRef<HTMLDivElement>(null);
+  const screenVideoRef = useRef<HTMLDivElement>(null);
   const localMediaRef = useRef<MediaStream | null>(null);
   const agoraClientRef = useRef<IAgoraRTCClient | null>(null);
   const roomUidRef = useRef<string | null>(null);
   const microphoneTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const cameraTrackRef = useRef<ICameraVideoTrack | null>(null);
+  const screenTrackRef = useRef<ILocalVideoTrack | null>(null);
+  const restoreCameraAfterShareRef = useRef(false);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [roomMode, setRoomMode] = useState<"loading" | "agora" | "local">("loading");
   const [auth, setAuth] = useState<AuthStatus>();
   const [email, setEmail] = useState("");
@@ -250,19 +254,22 @@ export function App() {
   function leaveRoom() {
     const leavingMeetingId = meetingId;
     const client = agoraClientRef.current;
-    const tracks = [microphoneTrackRef.current, cameraTrackRef.current].filter((track): track is IMicrophoneAudioTrack | ICameraVideoTrack => Boolean(track));
+    const tracks = [microphoneTrackRef.current, cameraTrackRef.current, screenTrackRef.current].filter((track): track is IMicrophoneAudioTrack | ILocalVideoTrack => Boolean(track));
     if (client) void client.unpublish(tracks).catch(() => undefined).then(() => client.leave());
+    screenTrackRef.current = null;
     tracks.forEach((track) => { track.stop(); track.close(); });
     agoraClientRef.current = null;
     roomUidRef.current = null;
     microphoneTrackRef.current = null;
     cameraTrackRef.current = null;
+    restoreCameraAfterShareRef.current = false;
     const stream = videoRef.current?.srcObject as MediaStream | null;
     stream?.getTracks().forEach((track) => track.stop());
     localMediaRef.current?.getTracks().forEach((track) => track.stop());
     localMediaRef.current = null;
     setRoomMembers([]);
     setCameraOn(false);
+    setScreenSharing(false);
     setMicOn(true);
     setView("office");
     void Promise.all([
@@ -286,6 +293,7 @@ export function App() {
     const next = !cameraOn;
     if (roomMode === "agora" && agoraClientRef.current) {
       if (next) {
+        if (screenSharing) await stopScreenShare(false);
         try {
           const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
           const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
@@ -323,6 +331,73 @@ export function App() {
       if (next) { setCameraOn(true); await new Promise((resolve) => window.setTimeout(resolve, 0)); if (videoRef.current) videoRef.current.srcObject = localMediaRef.current; return; }
     }
     setCameraOn(next);
+  }
+
+  async function stopScreenShare(restoreCamera: boolean) {
+    const screen = screenTrackRef.current;
+    if (!screen) return;
+    screenTrackRef.current = null;
+    await agoraClientRef.current?.unpublish(screen).catch(() => undefined);
+    screen.stop();
+    screen.close();
+    setScreenSharing(false);
+    setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: true } : member));
+    const shouldRestoreCamera = restoreCamera && restoreCameraAfterShareRef.current;
+    restoreCameraAfterShareRef.current = false;
+    if (shouldRestoreCamera) {
+      try {
+        const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+        const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
+        cameraTrackRef.current = camera;
+        flushSync(() => setCameraOn(true));
+        if (agoraVideoRef.current) camera.play(agoraVideoRef.current, { fit: "cover", mirror: true });
+        await agoraClientRef.current?.publish(camera);
+        setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: false } : member));
+      } catch { setCameraOn(false); showToast("Screen sharing stopped, but the camera could not be restored."); }
+    }
+  }
+
+  async function toggleScreenShare() {
+    if (roomMode !== "agora" || !agoraClientRef.current) { showToast("Screen sharing requires an Agora connection."); return; }
+    if (screenSharing) { await stopScreenShare(true); return; }
+    restoreCameraAfterShareRef.current = cameraOn;
+    if (cameraTrackRef.current) {
+      await agoraClientRef.current.unpublish(cameraTrackRef.current).catch(() => undefined);
+      cameraTrackRef.current.stop();
+      cameraTrackRef.current.close();
+      cameraTrackRef.current = null;
+      setCameraOn(false);
+    }
+    try {
+      const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+      const screen = await AgoraRTC.createScreenVideoTrack({ encoderConfig: "1080p_1", optimizationMode: "detail" }, "disable");
+      screenTrackRef.current = screen;
+      screen.on("track-ended", () => void stopScreenShare(true));
+      flushSync(() => setScreenSharing(true));
+      if (screenVideoRef.current) screen.play(screenVideoRef.current, { fit: "contain", mirror: false });
+      await agoraClientRef.current.publish(screen);
+      setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: false } : member));
+      showToast("Screen sharing started");
+    } catch (error) {
+      console.error("Unable to start screen sharing", error);
+      screenTrackRef.current?.close();
+      screenTrackRef.current = null;
+      setScreenSharing(false);
+      const restore = restoreCameraAfterShareRef.current;
+      restoreCameraAfterShareRef.current = false;
+      if (restore) {
+        try {
+          const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
+          const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
+          cameraTrackRef.current = camera;
+          flushSync(() => setCameraOn(true));
+          if (agoraVideoRef.current) camera.play(agoraVideoRef.current, { fit: "cover", mirror: true });
+          await agoraClientRef.current.publish(camera);
+          setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: false } : member));
+        } catch { setCameraOn(false); }
+      }
+      showToast("Screen sharing was cancelled or unavailable.");
+    }
   }
 
   async function createInvite(event: React.FormEvent) {
@@ -382,18 +457,20 @@ export function App() {
     {(() => {
       const currentUserId = roomUidRef.current ?? auth.user.id;
       const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];
-      const hasRoomVideo = cameraOn || roomMembers.some((member) => !member.videoMuted);
+      const hasRoomVideo = cameraOn || screenSharing || roomMembers.some((member) => !member.videoMuted);
       return <div className={`video-stage ${hasRoomVideo ? "has-video" : "audio-only"}`}>
         {hasRoomVideo && <div className="remote-video-grid">{displayMembers.filter((member) => member.id !== currentUserId && !member.videoMuted).map((member) => <div className="remote-video-tile" id={`remote-video-${member.id}`} key={member.id} />)}</div>}
         {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => <div className="audio-participant" key={member.id}><div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><strong>{member.name}</strong><span>{member.audioMuted ? <><MicOff size={13}/> Muted</> : <><Mic size={13}/> Listening</>}</span></div>)}</div>}
         {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><span className={`mini-avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</span><small>{member.name}</small></div>)}</div>}
         {roomMode === "agora" && cameraOn && <div className="local-camera-preview" ref={agoraVideoRef} />}
+        {roomMode === "agora" && screenSharing && <div className="local-screen-preview" ref={screenVideoRef} />}
         {roomMode === "local" && cameraOn && <video ref={videoRef} autoPlay muted playsInline />}
       </div>;
     })()}
     <div className="call-controls">
       <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()}>{micOn ? <Mic /> : <MicOff />}</button>
       <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()}>{cameraOn ? <Video /> : <VideoOff />}</button>
+      <button className={screenSharing ? "sharing" : ""} onClick={() => void toggleScreenShare()} title={screenSharing ? "Stop sharing" : "Share screen"}><MonitorUp /></button>
       <button className="hangup" onClick={leaveRoom}><PhoneOff /></button>
     </div>
   </div>;
