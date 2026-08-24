@@ -229,7 +229,7 @@ export function App() {
           updateMember(id, { videoMuted: false });
           for (let attempt = 0; attempt < 20 && !document.getElementById(`remote-video-${id}`); attempt += 1) await new Promise((resolve) => window.setTimeout(resolve, 50));
           const target = document.getElementById(`remote-video-${id}`);
-          if (target) user.videoTrack?.play(target, { fit: "cover" });
+          if (target) user.videoTrack?.play(target, { fit: "contain", mirror: false });
         }
       });
       client.on("user-unpublished", (user, mediaType) => updateMember(String(user.uid), mediaType === "audio" ? { audioMuted: true } : { videoMuted: true }));
