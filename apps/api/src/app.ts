@@ -193,7 +193,8 @@ export async function buildApp() {
     const input = z.object({ description: z.string().trim().min(1).max(500).optional(), dueAt: z.string().datetime().nullable().optional(), status: z.enum(["proposed", "accepted", "complete", "dismissed"]).optional() }).refine((value) => Object.keys(value).length > 0).parse(request.body);
     const existing = await database.query(`SELECT a.assignee_id FROM action_items a JOIN meetings m ON m.id=a.meeting_id WHERE a.id=$1 AND (m.is_private=false OR EXISTS(SELECT 1 FROM meeting_participants p WHERE p.meeting_id=m.id AND p.user_id=$2))`, [request.params.actionItemId, user.id]);
     if (!existing.rowCount) return reply.code(404).send({ error: "Action item not found" });
-    if ((input.status === "accepted" || input.status === "complete") && existing.rows[0].assignee_id && existing.rows[0].assignee_id !== user.id) return reply.code(403).send({ error: "Only the assignee can accept or complete this item" });
+    if (existing.rows[0].assignee_id && existing.rows[0].assignee_id !== user.id) return reply.code(403).send({ error: "Only the assignee can update this action item" });
+    if (!existing.rows[0].assignee_id && input.status !== "accepted") return reply.code(403).send({ error: "Accept this unassigned action item before updating it" });
     const fields: string[] = [];
     const values: unknown[] = [];
     if (input.description !== undefined) { values.push(input.description); fields.push(`description=$${values.length}`); }

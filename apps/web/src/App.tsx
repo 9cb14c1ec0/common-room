@@ -433,17 +433,19 @@ export function App() {
 
   function renderActionItem(item: ActionItem, showMeeting = false) {
     const editing = editingAction?.id === item.id;
+    const isAssignee = item.assigneeId === auth?.user?.id;
+    const isUnassigned = !item.assigneeId;
     return <li className={`action-item status-${item.status}`} key={item.id}>
       {editing ? <form className="action-edit" onSubmit={(event) => { event.preventDefault(); void updateActionItem(item, { description: editingAction.description, dueAt: editingAction.dueAt ? new Date(`${editingAction.dueAt}T12:00:00`).toISOString() : null }); }}>
         <input value={editingAction.description} onChange={(event) => setEditingAction({ ...editingAction, description: event.target.value })} required maxLength={500} aria-label="Action item description" />
         <input type="date" value={editingAction.dueAt} onChange={(event) => setEditingAction({ ...editingAction, dueAt: event.target.value })} aria-label="Due date" />
         <button type="submit" className="primary">Save</button><button type="button" onClick={() => setEditingAction(undefined)}>Cancel</button>
       </form> : <><div className="action-copy"><strong>{item.description}</strong><small>{showMeeting ? `${item.meetingTitle}${item.meetingOccurredAt ? ` · ${new Date(item.meetingOccurredAt).toLocaleDateString()}` : ""} · ` : ""}{item.assigneeName ?? "Unassigned"}{item.dueAt ? ` · due ${new Date(item.dueAt).toLocaleDateString()}` : ""}<span className="action-status">{item.status}</span></small></div><div className="action-buttons">
-        {item.status === "proposed" && <button className="primary" onClick={() => void updateActionItem(item, { status: "accepted" })}><Check size={14} /> Accept</button>}
-        {item.status === "accepted" && <button className="primary" onClick={() => void updateActionItem(item, { status: "complete" })}><Check size={14} /> Complete</button>}
-        {item.status === "complete" && <button onClick={() => void updateActionItem(item, { status: "accepted" })}>Reopen</button>}
-        {item.status !== "dismissed" && <button onClick={() => setEditingAction({ id: item.id, description: item.description, dueAt: item.dueAt ? item.dueAt.slice(0, 10) : "" })}><Pencil size={14} /> Edit</button>}
-        {item.status !== "dismissed" && item.status !== "complete" && <button onClick={() => void updateActionItem(item, { status: "dismissed" })}><X size={14} /> Dismiss</button>}
+        {item.status === "proposed" && (isAssignee || isUnassigned) && <button className="primary" onClick={() => void updateActionItem(item, { status: "accepted" })}><Check size={14} /> {isUnassigned ? "Accept & assign to me" : "Accept"}</button>}
+        {item.status === "accepted" && isAssignee && <button className="primary" onClick={() => void updateActionItem(item, { status: "complete" })}><Check size={14} /> Complete</button>}
+        {item.status === "complete" && isAssignee && <button onClick={() => void updateActionItem(item, { status: "accepted" })}>Reopen</button>}
+        {item.status !== "dismissed" && isAssignee && <button onClick={() => setEditingAction({ id: item.id, description: item.description, dueAt: item.dueAt ? item.dueAt.slice(0, 10) : "" })}><Pencil size={14} /> Edit</button>}
+        {item.status !== "dismissed" && item.status !== "complete" && isAssignee && <button onClick={() => void updateActionItem(item, { status: "dismissed" })}><X size={14} /> Dismiss</button>}
       </div></>}
     </li>;
   }
