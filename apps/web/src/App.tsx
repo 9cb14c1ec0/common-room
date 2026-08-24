@@ -249,7 +249,7 @@ export function App() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         localMediaRef.current = stream;
         setRoomMode("local");
-        showToast("Agora was unavailable; showing a local device preview.");
+        showToast("The calling service was unavailable; showing a local device preview.");
       } catch {
         setCameraOn(false);
         setMicOn(false);
@@ -366,7 +366,7 @@ export function App() {
   }
 
   async function toggleScreenShare() {
-    if (roomMode !== "agora" || !agoraClientRef.current) { showToast("Screen sharing requires an Agora connection."); return; }
+    if (roomMode !== "agora" || !agoraClientRef.current) { showToast("Screen sharing requires an active call."); return; }
     if (screenSharing) { await stopScreenShare(true); return; }
     restoreCameraAfterShareRef.current = cameraOn;
     if (cameraTrackRef.current) {
@@ -463,7 +463,7 @@ export function App() {
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
 
   if (view === "room") return <div className="room-screen">
-    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>{meetingTitle}</strong><small>{roomMode === "agora" ? "Connected through Agora" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
+    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>{meetingTitle}</strong><small>{roomMode === "agora" ? "Connected" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
     {(() => {
       const currentUserId = roomUidRef.current ?? auth.user.id;
       const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];

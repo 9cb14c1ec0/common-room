@@ -297,7 +297,7 @@ export async function buildApp() {
     const appId = process.env.AGORA_APP_ID;
     const appCertificate = process.env.AGORA_APP_CERTIFICATE;
     if (!appId || !appCertificate) {
-      return reply.code(503).send({ error: "Agora is not configured", code: "INTEGRATION_NOT_CONFIGURED" });
+      return reply.code(503).send({ error: "Calling is not configured", code: "INTEGRATION_NOT_CONFIGURED" });
     }
     const authenticated = database ? await currentUser(database, request) : undefined;
     if (database && !authenticated) return reply.code(401).send({ error: "Authentication required" });
