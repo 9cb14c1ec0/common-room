@@ -7,6 +7,12 @@ export interface Person {
   title: string;
   presence: Presence;
   isAdmin?: boolean;
+  location?: {
+    kind: "office" | "common_room";
+    officeOwnerId: string | null;
+    label: string;
+    occupants: string[];
+  };
 }
 
 export interface MeetingRequest {

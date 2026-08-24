@@ -95,8 +95,11 @@ export async function buildApp() {
   app.get("/api/people", async (request, reply) => {
     if (!database) return { people };
     if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query("SELECT id,display_name,title,presence,is_admin FROM users ORDER BY display_name");
-    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence, isAdmin: row.is_admin })) };
+    const result = await database.query(`SELECT u.id,u.display_name,u.title,u.presence,u.is_admin,active_meeting.is_private,active_meeting.office_owner_id,owner.display_name office_owner_name,
+      coalesce((SELECT jsonb_agg(member.display_name ORDER BY member.display_name) FROM meeting_participants other_participant JOIN users member ON member.id=other_participant.user_id WHERE other_participant.meeting_id=active_meeting.id AND other_participant.joined_at IS NOT NULL AND other_participant.left_at IS NULL),'[]'::jsonb) occupants
+      FROM users u LEFT JOIN LATERAL (SELECT m.id,m.is_private,m.office_owner_id FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.user_id=u.id AND p.joined_at IS NOT NULL AND p.left_at IS NULL AND m.status='active' ORDER BY m.started_at DESC LIMIT 1) active_meeting ON true
+      LEFT JOIN users owner ON owner.id=active_meeting.office_owner_id ORDER BY u.display_name`);
+    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence, isAdmin: row.is_admin, location: row.is_private === null ? undefined : { kind: row.is_private ? "office" : "common_room", officeOwnerId: row.office_owner_id, label: row.is_private ? `${row.office_owner_name ?? "Private"}’s office` : "Common Room", occupants: row.occupants } })) };
   });
   app.delete<{ Params: { userId: string } }>("/api/users/:userId", async (request, reply) => {
     if (!database) return reply.code(400).send({ error: "Database is not configured" });
@@ -273,7 +276,7 @@ export async function buildApp() {
       return { status: input.status };
     }
     const roomName = `meeting-${request.params.requestId}`;
-    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,status,started_at) VALUES($1,$2,true,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`]);
+    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,office_owner_id,status,started_at) VALUES($1,$2,true,$3,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`, row.sender_id]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
     return { status: input.status, meetingId: meeting.rows[0].id };

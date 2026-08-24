@@ -43,6 +43,7 @@ h1 { font-size: 32px; } h2 { font-size: clamp(32px, 4vw, 52px); margin: 20px 0 9
 .tone-0 { background:#d8c9ae }.tone-1 { background:#bbcbd1 }.tone-2 { background:#c8bdd2 }.tone-3 { background:#c7d2bd }
 .presence-ring { position: absolute; right: -2px; bottom: -2px; width: 13px; height: 13px; border: 3px solid #faf9f6; border-radius: 50%; }
 .person-info { margin: 14px 0; }.person-info strong,.person-info small { display:block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.person-info small { color:#78817c; margin-top:3px; font-size:12px; }
+.person-location{display:block;margin-top:8px;color:#596860;font-size:11px;line-height:1.4}.person-location .dot{margin-right:3px}
 .person-card button { width: 100%; border: 1px solid #d3d3cb; border-radius: 9px; background: transparent; padding: 8px; color: #34423c; font-size: 12px; cursor:pointer; }.person-card button:disabled { color:#9da39f; cursor:default; }
 .person-actions{display:grid;gap:7px}.person-card .delete-user{display:flex;align-items:center;justify-content:center;gap:5px;border-color:#e4c8c4;color:#984b44}.person-card .delete-user:hover{background:#f8e8e5}
 .lower-grid { display:grid; grid-template-columns: 1.35fr 1fr; gap:16px; margin-top:42px; }
