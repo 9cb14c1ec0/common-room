@@ -20,7 +20,7 @@ export function App() {
   const [sentTo, setSentTo] = useState<string>();
   const [doorOpen, setDoorOpen] = useState(true);
   const [doorSaving, setDoorSaving] = useState(false);
-  const [view, setView] = useState<"office" | "requests" | "notes" | "actions" | "room">("office");
+  const [view, setView] = useState<"office" | "notes" | "actions" | "room">("office");
   const [requests, setRequests] = useState<RequestView[]>([]);
   const [toast, setToast] = useState<string>();
   const [micOn, setMicOn] = useState(true);
@@ -77,8 +77,8 @@ export function App() {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
           if (announce) for (const item of nextRequests) {
             const previous = knownRequestStatesRef.current.get(item.id);
-            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} wants to meet`); showBrowserNotification("Meeting request", `${item.senderName} wants to meet`, `request-${item.id}`); }
-            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} accepted — join from Requests`); showBrowserNotification("Invitation accepted", `${item.recipientName} accepted your meeting invitation`, `accepted-${item.id}`); }
+            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); showBrowserNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
+            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); showBrowserNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
           }
           knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
           setRequests(nextRequests);
@@ -148,10 +148,10 @@ export function App() {
     const response = await fetch(`${apiUrl}/api/requests`, {
       method: "POST", headers: { "content-type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ fromId: auth?.user?.id ?? "", toId: person.id, message: "Meet me in the Common Room?" })
+      body: JSON.stringify({ fromId: auth?.user?.id ?? "", toId: person.id, message: "Knock knock" })
     }).catch(() => undefined);
     if (!response || !response.ok) { const body = response ? await response.json().catch(() => ({})) : {}; showToast(body.error ?? "The meeting request could not be sent"); setSentTo(undefined); return; }
-    showToast(`Meeting request sent to ${person.name}`);
+    showToast(`You knocked on ${person.name}’s door`);
     await loadOfficeData();
     window.setTimeout(() => setSentTo(undefined), 1800);
   }
@@ -172,7 +172,7 @@ export function App() {
   function showBrowserNotification(title: string, body: string, tag: string) {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
     const notification = new Notification(title, { body, tag });
-    notification.onclick = () => { window.focus(); setView("requests"); notification.close(); };
+    notification.onclick = () => { window.focus(); setView("office"); notification.close(); };
   }
 
   async function enableNotifications() {
@@ -425,18 +425,11 @@ export function App() {
 
   async function respondToRequest(item: RequestView, status: "accepted" | "declined" | "cancelled") {
     const response = await fetch(`${apiUrl}/api/requests/${item.id}`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }) });
-    if (!response.ok) { showToast("Unable to update the request"); return; }
+    if (!response.ok) { showToast("Unable to respond to the knock"); return; }
     const body = await response.json();
     await loadOfficeData();
     if (status === "accepted" && body.meetingId) await enterRoom(body.meetingId);
-    else showToast(status === "cancelled" ? "Request cancelled" : `Request ${status}`);
-  }
-
-  async function dismissRequest(item: RequestView) {
-    const response = await fetch(`${apiUrl}/api/requests/${item.id}`, { method: "DELETE", credentials: "include" });
-    if (!response.ok) { showToast("The request could not be dismissed"); return; }
-    setRequests((current) => current.filter((request) => request.id !== item.id));
-    showToast("Request dismissed");
+    else showToast(status === "cancelled" ? "Knock cancelled" : "You didn’t let them in");
   }
 
   function renderActionItem(item: ActionItem, showMeeting = false) {
@@ -490,7 +483,6 @@ export function App() {
       <div className="brand"><span className="brand-mark"><DoorOpen size={19} /></span><span>Common Room</span></div>
       <nav>
         <button className={view === "office" ? "active" : ""} onClick={() => setView("office")}><Users size={18} /> Office</button>
-        <button className={view === "requests" ? "active" : ""} onClick={() => setView("requests")}><Bell size={18} /> Requests {requests.filter((item) => item.status === "pending").length > 0 && <span className="badge">{requests.filter((item) => item.status === "pending").length}</span>}</button>
         <button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}><History size={18} /> Meeting notes</button>
         <button className={view === "actions" ? "active" : ""} onClick={() => setView("actions")}><ListChecks size={18} /> My action items {myActionItems.filter((item) => item.status !== "complete").length > 0 && <span className="badge">{myActionItems.filter((item) => item.status !== "complete").length}</span>}</button>
       </nav>
@@ -498,7 +490,7 @@ export function App() {
     </aside>
 
     <main>
-      {view !== "office" && <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "requests" ? "Meeting requests" : view === "actions" ? "My action items" : "Meeting notes"}</h1></div><div className="header-actions">{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}</div></header>}
+      {view !== "office" && <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "actions" ? "My action items" : "Meeting notes"}</h1></div><div className="header-actions">{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}</div></header>}
 
       {view === "office" && <><section className="room-grid"><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><h2>My Office</h2><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> DOOR {doorOpen ? "OPEN" : "CLOSED"}</span></div>
@@ -511,17 +503,17 @@ export function App() {
         <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
           <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
           <div className="person-info"><strong>{person.name}</strong><small>{person.title}{person.isAdmin ? " · Administrator" : ""}</small>{person.location && <span className="person-location"><i className="dot busy" /> {person.location.label}{person.location.occupants.filter((name) => name !== person.name).length ? ` · with ${person.location.occupants.filter((name) => name !== person.name).join(", ")}` : ""}</span>}</div>
-          <div className="person-actions"><button disabled={person.presence !== "available" || person.id === auth.user?.id} onClick={() => invite(person)}>
-            {sentTo === person.id ? "Request sent" : person.presence === "available" ? "Ask to meet" : person.presence === "busy" ? "In a meeting" : "Away"}
+          <div className="person-actions"><button disabled={(!requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") && person.presence !== "available") || person.id === auth.user?.id} onClick={() => { const knock = requests.find((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending"); if (knock) void respondToRequest(knock, "cancelled"); else void invite(person); }}>
+            {requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") ? "Cancel knock" : sentTo === person.id ? "Knocking…" : person.presence === "available" ? "Knock on door" : person.presence === "busy" ? "In a meeting" : "Door closed"}
           </button>{auth.user?.isAdmin && person.id !== auth.user?.id && <button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete</button>}</div>
         </article>)}</div>
       </section>
 
       <section className="section-block office-actions"><div className="section-heading"><div><p className="eyebrow">YOUR WORK</p><h3>Current action items</h3></div><button className="text-button" onClick={() => setView("actions")}>View all <ArrowUpRight size={14} /></button></div>{myActionItems.filter((item) => item.status !== "complete").length ? <ul className="action-items task-list">{myActionItems.filter((item) => item.status !== "complete").map((item) => renderActionItem(item, true))}</ul> : <div className="compact-empty"><Check size={18} /> You’re all caught up.</div>}</section></>}
-      {view === "requests" && <section className="panel-list"><p className="panel-intro">Accept a request to enter a private shared meeting room together.</p>{requests.length === 0 ? <div className="empty-state"><Bell size={28} /><h3>No meeting requests</h3><p>Return to the office and ask an available teammate to meet.</p></div> : requests.map((item) => <article className="request-row" key={item.id}><div className="avatar tone-2">{(item.direction === "incoming" ? item.senderName : item.recipientName).split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</div><div><strong>{item.direction === "incoming" ? `${item.senderName} wants to meet` : `Request to ${item.recipientName}`}</strong><small>{item.message ?? "The Common Room"} · {item.status}</small></div><div className="request-actions">{item.status === "pending" ? item.direction === "incoming" ? <><button className="accept" onClick={() => void respondToRequest(item,"accepted")}><Check size={16}/> Accept</button><button onClick={() => void respondToRequest(item,"declined")}><X size={16}/> Decline</button></> : <button onClick={() => void respondToRequest(item,"cancelled")}><X size={16}/> Cancel</button> : <>{item.status === "accepted" && item.meetingId && <button className="accept" onClick={() => void enterRoom(item.meetingId)}><Video size={16}/> Join</button>}<button onClick={() => void dismissRequest(item)}><X size={16}/> Dismiss</button></>}</div></article>)}</section>}
       {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><span>{meeting.durationMinutes} min</span></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => renderActionItem(item))}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>{noteSearch ? "No matching meeting notes" : "No meeting notes yet"}</h3>{noteSearch && <p>Try a different word or phrase.</p>}</div>}</section>}
       {view === "actions" && <section className="panel-list"><p className="panel-intro">Accept proposed work, adjust its wording or due date, and mark it complete when you’re done.</p>{myActionItems.length ? <ul className="action-items task-list">{myActionItems.map((item) => renderActionItem(item, true))}</ul> : <div className="empty-state"><ListChecks size={28} /><h3>No action items assigned to you</h3><p>Accepted proposals and assigned next steps will appear here.</p></div>}</section>}
     </main>
+    {(() => { const knock = requests.find((item) => item.direction === "incoming" && item.status === "pending"); return knock ? <div className="knock-backdrop"><section className="knock-dialog" role="dialog" aria-modal="true" aria-labelledby="knock-title"><div className="knock-icon"><DoorOpen size={24} /></div><p className="eyebrow">KNOCK AT THE DOOR</p><h3 id="knock-title">{knock.senderName} is at your door</h3><p>Would you like to let them into your office?</p><div><button className="secondary" onClick={() => void respondToRequest(knock, "declined")}>Not now</button><button className="primary" onClick={() => void respondToRequest(knock, "accepted")}><DoorOpen size={16} /> Let them in</button></div></section></div> : null; })()}
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}
   </div>;
 }

@@ -129,6 +129,7 @@ async function stopEmptyRooms() {
     if (recorder.stopping || !recorder.sawParticipant || recorder.remoteUsers.size || !recorder.emptySince || Date.now() - recorder.emptySince < emptyRoomGraceMs) continue;
     recorder.stopping = true;
     await pool.query("UPDATE meetings SET status='processing',ended_at=coalesce(ended_at,now()) WHERE id=$1 AND status='active'", [meetingId]);
+    await pool.query("DELETE FROM meeting_requests WHERE meeting_id=$1", [meetingId]);
     recorder.child.stdin.write("1\n");
     console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Finalizing recording after the room became empty", meetingId }));
   }

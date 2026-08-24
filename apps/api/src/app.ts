@@ -232,10 +232,12 @@ export async function buildApp() {
     if (!database) return { requests };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
+    await database.query("UPDATE meeting_requests SET status='expired',responded_at=now() WHERE status='pending' AND created_at < now()-interval '2 minutes'");
     const result = await database.query(`SELECT r.id,r.sender_id,r.recipient_id,r.message,r.status,r.created_at,r.meeting_id,
       sender.display_name sender_name, recipient.display_name recipient_name
       FROM meeting_requests r JOIN users sender ON sender.id=r.sender_id JOIN users recipient ON recipient.id=r.recipient_id
-      WHERE r.sender_id=$1 OR r.recipient_id=$1 ORDER BY r.created_at DESC`, [user.id]);
+      LEFT JOIN meetings m ON m.id=r.meeting_id
+      WHERE (r.sender_id=$1 OR r.recipient_id=$1) AND (r.status='pending' OR (r.status='accepted' AND m.status IN ('waiting','active'))) ORDER BY r.created_at DESC`, [user.id]);
     return { requests: result.rows.map((row) => ({ id: row.id, senderId: row.sender_id, recipientId: row.recipient_id, senderName: row.sender_name, recipientName: row.recipient_name, message: row.message, status: row.status, createdAt: row.created_at, meetingId: row.meeting_id, direction: row.sender_id === user.id ? "outgoing" : "incoming" })) };
   });
 
@@ -247,6 +249,8 @@ export async function buildApp() {
       const recipient = await database.query("SELECT presence FROM users WHERE id=$1", [input.toId]);
       if (!recipient.rows[0]) return reply.code(404).send({ error: "Person not found" });
       if (recipient.rows[0].presence !== "available") return reply.code(409).send({ error: "That person’s door is closed" });
+      const pending = await database.query("SELECT 1 FROM meeting_requests WHERE status='pending' AND ((sender_id=$1 AND recipient_id=$2) OR (sender_id=$2 AND recipient_id=$1))", [user.id, input.toId]);
+      if (pending.rowCount) return reply.code(409).send({ error: "There is already a knock between these offices" });
       const result = await database.query("INSERT INTO meeting_requests(sender_id,recipient_id,message) VALUES($1,$2,$3) RETURNING id,status,created_at", [user.id, input.toId, input.message ?? null]);
       return reply.code(201).send({ request: { ...result.rows[0], from: user, toId: input.toId } });
     }
@@ -276,7 +280,7 @@ export async function buildApp() {
       return { status: input.status };
     }
     const roomName = `meeting-${request.params.requestId}`;
-    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,office_owner_id,status,started_at) VALUES($1,$2,true,$3,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`, row.sender_id]);
+    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,office_owner_id,status,started_at) VALUES($1,$2,true,$3,'waiting',now()) RETURNING id", [roomName, `${row.recipient_name}’s Office`, row.recipient_id]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
     return { status: input.status, meetingId: meeting.rows[0].id };
@@ -350,6 +354,7 @@ export async function buildApp() {
     const active = await database.query("SELECT 1 FROM meeting_participants WHERE meeting_id=$1 AND joined_at IS NOT NULL AND left_at IS NULL LIMIT 1", [request.params.meetingId]);
     if (!active.rowCount) {
       await database.query("UPDATE meetings SET status='processing',ended_at=now() WHERE id=$1", [request.params.meetingId]);
+      await database.query("DELETE FROM meeting_requests WHERE meeting_id=$1", [request.params.meetingId]);
     }
     return { ok: true };
   });
