@@ -95,8 +95,28 @@ export async function buildApp() {
   app.get("/api/people", async (request, reply) => {
     if (!database) return { people };
     if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query("SELECT id,display_name,title,presence FROM users ORDER BY display_name");
-    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence })) };
+    const result = await database.query("SELECT id,display_name,title,presence,is_admin FROM users ORDER BY display_name");
+    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence, isAdmin: row.is_admin })) };
+  });
+  app.delete<{ Params: { userId: string } }>("/api/users/:userId", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    if (request.params.userId === user.id) return reply.code(409).send({ error: "You cannot delete your own account" });
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      const target = await client.query("SELECT id,display_name,is_admin FROM users WHERE id=$1 FOR UPDATE", [request.params.userId]);
+      if (!target.rowCount) { await client.query("ROLLBACK"); return reply.code(404).send({ error: "User not found" }); }
+      if (target.rows[0].is_admin) {
+        const administrators = await client.query("SELECT id FROM users WHERE is_admin=true FOR UPDATE");
+        if ((administrators.rowCount ?? 0) <= 1) { await client.query("ROLLBACK"); return reply.code(409).send({ error: "The final administrator cannot be deleted" }); }
+      }
+      await client.query("DELETE FROM users WHERE id=$1", [request.params.userId]);
+      await client.query("COMMIT");
+      return reply.code(204).send();
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
   });
   app.patch("/api/presence", async (request, reply) => {
     const input = z.union([z.object({ doorOpen: z.boolean() }), z.object({ status: z.enum(["available", "busy", "do_not_disturb"]) })]).parse(request.body);

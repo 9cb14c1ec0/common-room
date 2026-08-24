@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS invitations (
   email text NOT NULL,
   title text NOT NULL DEFAULT '',
   token_hash text NOT NULL UNIQUE,
-  created_by uuid NOT NULL REFERENCES users(id),
+  created_by uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at timestamptz NOT NULL,
   accepted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()

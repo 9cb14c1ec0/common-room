@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Trash2, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
@@ -154,6 +154,14 @@ export function App() {
     showToast(`Meeting request sent to ${person.name}`);
     await loadOfficeData();
     window.setTimeout(() => setSentTo(undefined), 1800);
+  }
+
+  async function deleteUser(person: Person) {
+    if (!window.confirm(`Delete ${person.name}? Their access and active sessions will be removed immediately. Existing meeting notes will be preserved.`)) return;
+    const response = await fetch(`${apiUrl}/api/users/${person.id}`, { method: "DELETE", credentials: "include" });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to delete the user"); return; }
+    showToast(`${person.name} was deleted`);
+    await loadOfficeData();
   }
 
   function showToast(message: string) {
@@ -502,10 +510,10 @@ export function App() {
         {addingPerson && <form className="add-person invite-form" onSubmit={(event) => void createInvite(event)}><input type="email" placeholder="Teammate email" value={newPerson.email} onChange={(event) => setNewPerson({...newPerson,email:event.target.value})} required /><input placeholder="Title (optional)" value={newPerson.title} onChange={(event) => setNewPerson({...newPerson,title:event.target.value})} /><button type="submit">Create invite link</button>{inviteUrl && <div className="invite-result"><input readOnly value={inviteUrl} /><button type="button" onClick={() => { void navigator.clipboard.writeText(inviteUrl); showToast("Invite link copied"); }}>Copy link</button></div>}</form>}
         <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
           <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
-          <div className="person-info"><strong>{person.name}</strong><small>{person.title}</small></div>
-          <button disabled={person.presence !== "available" || person.id === auth.user?.id} onClick={() => invite(person)}>
+          <div className="person-info"><strong>{person.name}</strong><small>{person.title}{person.isAdmin ? " · Administrator" : ""}</small></div>
+          <div className="person-actions"><button disabled={person.presence !== "available" || person.id === auth.user?.id} onClick={() => invite(person)}>
             {sentTo === person.id ? "Request sent" : person.presence === "available" ? "Ask to meet" : person.presence === "busy" ? "In a meeting" : "Away"}
-          </button>
+          </button>{auth.user?.isAdmin && person.id !== auth.user?.id && <button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete</button>}</div>
         </article>)}</div>
       </section>
 

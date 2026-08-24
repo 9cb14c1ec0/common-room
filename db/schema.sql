@@ -18,8 +18,8 @@ CREATE TABLE users (
 
 CREATE TABLE meeting_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  sender_id uuid NOT NULL REFERENCES users(id),
-  recipient_id uuid NOT NULL REFERENCES users(id),
+  sender_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   message text,
   status meeting_request_status NOT NULL DEFAULT 'pending',
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -42,7 +42,7 @@ CREATE TABLE meetings (
 
 CREATE TABLE meeting_participants (
   meeting_id uuid NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(id),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   joined_at timestamptz,
   left_at timestamptz,
   PRIMARY KEY (meeting_id, user_id)
@@ -51,7 +51,7 @@ CREATE TABLE meeting_participants (
 CREATE TABLE action_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   meeting_id uuid NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-  assignee_id uuid REFERENCES users(id),
+  assignee_id uuid REFERENCES users(id) ON DELETE SET NULL,
   description text NOT NULL,
   source_timestamp_seconds integer,
   confidence numeric(4,3),
@@ -72,7 +72,7 @@ CREATE TABLE invitations (
   email text NOT NULL,
   title text NOT NULL DEFAULT '',
   token_hash text NOT NULL UNIQUE,
-  created_by uuid NOT NULL REFERENCES users(id),
+  created_by uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at timestamptz NOT NULL,
   accepted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()

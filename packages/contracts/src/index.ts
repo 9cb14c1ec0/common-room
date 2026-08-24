@@ -6,6 +6,7 @@ export interface Person {
   initials: string;
   title: string;
   presence: Presence;
+  isAdmin?: boolean;
 }
 
 export interface MeetingRequest {
