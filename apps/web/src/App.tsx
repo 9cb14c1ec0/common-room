@@ -44,10 +44,13 @@ export function App() {
   const inviteToken = new URLSearchParams(window.location.search).get("invite");
   const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
+  const [meetingTitle, setMeetingTitle] = useState("The Common Room");
+  const [newMeetingTitle, setNewMeetingTitle] = useState("");
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
   const [myActionItems, setMyActionItems] = useState<ActionItem[]>([]);
   const [noteSearch, setNoteSearch] = useState("");
   const [editingAction, setEditingAction] = useState<{ id: string; description: string; dueAt: string }>();
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => typeof Notification === "undefined" ? "denied" : Notification.permission);
   const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -70,8 +73,8 @@ export function App() {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
           if (announce) for (const item of nextRequests) {
             const previous = knownRequestStatesRef.current.get(item.id);
-            if (!previous && item.direction === "incoming" && item.status === "pending") showToast(`${item.senderName} wants to meet`);
-            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") showToast(`${item.recipientName} accepted — join from Requests`);
+            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} wants to meet`); showBrowserNotification("Meeting request", `${item.senderName} wants to meet`, `request-${item.id}`); }
+            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} accepted — join from Requests`); showBrowserNotification("Invitation accepted", `${item.recipientName} accepted your meeting invitation`, `accepted-${item.id}`); }
           }
           knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
           setRequests(nextRequests);
@@ -154,6 +157,19 @@ export function App() {
     window.setTimeout(() => setToast(undefined), 2600);
   }
 
+  function showBrowserNotification(title: string, body: string, tag: string) {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const notification = new Notification(title, { body, tag });
+    notification.onclick = () => { window.focus(); setView("requests"); notification.close(); };
+  }
+
+  async function enableNotifications() {
+    if (typeof Notification === "undefined") { showToast("Browser notifications are not supported here"); return; }
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+    showToast(permission === "granted" ? "Browser notifications enabled" : "Browser notifications were not enabled");
+  }
+
   async function toggleDoor() {
     if (doorSaving) return;
     const next = !doorOpen;
@@ -171,17 +187,19 @@ export function App() {
     } finally { setDoorSaving(false); }
   }
 
-  async function enterRoom(roomId = "main") {
+  async function enterRoom(roomId = "main", title?: string) {
     setMeetingId(roomId);
     setView("room");
     setRoomMode("loading");
     void fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "busy" }) });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     try {
-      const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName }) });
+      const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName, title: title?.trim() || undefined }) });
       if (!response.ok) throw new Error("Agora token unavailable");
-      const { appId, token, channelName, uid, meetingId: trackedMeetingId, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; meetingId: string; displayName: string };
+      const { appId, token, channelName, uid, meetingId: trackedMeetingId, meetingTitle: trackedMeetingTitle, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; meetingId: string; meetingTitle: string; displayName: string };
       setMeetingId(trackedMeetingId);
+      setMeetingTitle(trackedMeetingTitle);
+      setNewMeetingTitle("");
       const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
       const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
       const memberName = (id: string) => people.find((person) => person.id === id)?.name ?? "Participant";
@@ -360,7 +378,7 @@ export function App() {
   if (!auth?.user) return <div className="auth-screen"><form className="auth-card" onSubmit={(event) => void submitAuth(event)}><span className="brand-mark"><DoorOpen size={22} /></span><p className="eyebrow">COMMON ROOM</p><h1>{auth?.requiresSetup ? "Create the first account" : "Welcome back"}</h1><p>{auth?.requiresSetup ? "This account will be the administrator for your private workspace." : "Sign in to enter your company office."}</p>{auth?.requiresSetup && <label>Name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} autoComplete="name" /></label>}<label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={auth?.requiresSetup ? 10 : undefined} autoComplete={auth?.requiresSetup ? "new-password" : "current-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button type="submit">{auth?.requiresSetup ? "Create workspace" : "Sign in"}</button></form></div>;
 
   if (view === "room") return <div className="room-screen">
-    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>The Common Room</strong><small>{roomMode === "agora" ? "Connected through Agora" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
+    <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>{meetingTitle}</strong><small>{roomMode === "agora" ? "Connected through Agora" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
     {(() => {
       const currentUserId = roomUidRef.current ?? auth.user.id;
       const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];
@@ -393,12 +411,12 @@ export function App() {
     </aside>
 
     <main>
-      <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "office" ? "Your office" : view === "requests" ? "Meeting requests" : view === "actions" ? "My action items" : "Meeting notes"}</h1></div>{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}</header>
+      <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "office" ? "Your office" : view === "requests" ? "Meeting requests" : view === "actions" ? "My action items" : "Meeting notes"}</h1></div><div className="header-actions">{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}</div></header>
 
       {view === "office" && <><section className="room-grid"><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> PRIVATE OFFICE · DOOR {doorOpen ? "OPEN" : "CLOSED"}</span><h2>{doorOpen ? "Ready when you are." : "Focus time."}</h2></div>
         <button type="button" className="close-door" disabled={doorSaving} onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorSaving ? "Saving…" : doorOpen ? "Close my door" : "Open my door"}</button>
-      </section><article className="common-room-compact"><div><p className="eyebrow">SHARED SPACE</p><h3>The Common Room</h3><span><Mic size={14} /> Audio first · notes included</span></div><button className="enter-room" onClick={() => void enterRoom("main")}>Enter room <ArrowUpRight size={15} /></button></article></section>
+      </section><article className="common-room-compact"><div><p className="eyebrow">SHARED SPACE</p><h3>The Common Room</h3><label className="meeting-title-input"><Mic size={14} /><input value={newMeetingTitle} onChange={(event) => setNewMeetingTitle(event.target.value)} maxLength={100} placeholder="Meeting title (optional)" /></label></div><button className="enter-room" onClick={() => void enterRoom("main", newMeetingTitle)}>Enter room <ArrowUpRight size={15} /></button></article></section>
 
       <section className="section-block">
         <div className="section-heading"><div><p className="eyebrow">THE TEAM</p><h3>Who’s around</h3></div><div className="heading-actions"><span>{people.filter((p) => p.presence === "available").length} available</span>{auth.user.isAdmin && <button onClick={() => setAddingPerson(!addingPerson)}>+ Add teammate</button>}</div></div>

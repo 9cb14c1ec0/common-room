@@ -172,19 +172,19 @@ export async function buildApp() {
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     const query = z.string().trim().max(120).optional().parse(request.query.q) ?? "";
-    const result = await database.query(`SELECT m.id,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,m.recording_status,m.processing_error,
-      coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'meetingId',m.id,'meetingTitle','Common Room meeting','meetingOccurredAt',m.started_at,'description',a.description,'assigneeId',a.assignee_id,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.status='complete',a.due_at NULLS LAST,a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id AND a.status<>'dismissed'),'[]'::jsonb) action_items
-      FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 AND ($2='' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.status<>'dismissed' AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
-    return { meetings: result.rows.map((row) => ({ id: row.id, title: "Common Room meeting", occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
+    const result = await database.query(`SELECT m.id,m.title,coalesce(m.summary,'Processing is not complete.') summary,m.started_at,m.ended_at,m.recording_status,m.processing_error,
+      coalesce((SELECT jsonb_agg(jsonb_build_object('id',a.id,'meetingId',m.id,'meetingTitle',m.title,'meetingOccurredAt',m.started_at,'description',a.description,'assigneeId',a.assignee_id,'assigneeName',u.display_name,'dueAt',a.due_at,'confidence',a.confidence::float,'status',a.status) ORDER BY a.status='complete',a.due_at NULLS LAST,a.created_at) FROM action_items a LEFT JOIN users u ON u.id=a.assignee_id WHERE a.meeting_id=m.id AND a.status<>'dismissed'),'[]'::jsonb) action_items
+      FROM meetings m JOIN meeting_participants p ON p.meeting_id=m.id WHERE p.user_id=$1 AND ($2='' OR m.title ILIKE '%'||$2||'%' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.status<>'dismissed' AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
+    return { meetings: result.rows.map((row) => ({ id: row.id, title: row.title, occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
   });
   app.get("/api/action-items/mine", async (request, reply) => {
     if (!database) return { actionItems: [] };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query(`SELECT a.id,a.meeting_id,a.description,a.assignee_id,a.due_at,a.confidence::float,a.status,u.display_name assignee_name,m.started_at
+    const result = await database.query(`SELECT a.id,a.meeting_id,a.description,a.assignee_id,a.due_at,a.confidence::float,a.status,u.display_name assignee_name,m.started_at,m.title
       FROM action_items a JOIN meetings m ON m.id=a.meeting_id LEFT JOIN users u ON u.id=a.assignee_id
       WHERE a.assignee_id=$1 AND a.status<>'dismissed' ORDER BY a.status='complete',a.due_at NULLS LAST,a.created_at DESC`, [user.id]);
-    return { actionItems: result.rows.map((row) => ({ id: row.id, meetingId: row.meeting_id, meetingTitle: "Common Room meeting", meetingOccurredAt: row.started_at, description: row.description, assigneeId: row.assignee_id, assigneeName: row.assignee_name, dueAt: row.due_at, confidence: row.confidence, status: row.status })) };
+    return { actionItems: result.rows.map((row) => ({ id: row.id, meetingId: row.meeting_id, meetingTitle: row.title, meetingOccurredAt: row.started_at, description: row.description, assigneeId: row.assignee_id, assigneeName: row.assignee_name, dueAt: row.due_at, confidence: row.confidence, status: row.status })) };
   });
   app.patch<{ Params: { actionItemId: string } }>("/api/action-items/:actionItemId", async (request, reply) => {
     if (!database) return reply.code(404).send({ error: "Action item not found" });
@@ -242,7 +242,7 @@ export async function buildApp() {
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     const input = z.object({ status: z.enum(["accepted", "declined", "cancelled"]) }).parse(request.body);
-    const existing = await database.query("SELECT sender_id,recipient_id,status FROM meeting_requests WHERE id=$1", [request.params.requestId]);
+    const existing = await database.query("SELECT r.sender_id,r.recipient_id,r.status,sender.display_name sender_name,recipient.display_name recipient_name FROM meeting_requests r JOIN users sender ON sender.id=r.sender_id JOIN users recipient ON recipient.id=r.recipient_id WHERE r.id=$1", [request.params.requestId]);
     const row = existing.rows[0];
     if (!row || row.status !== "pending") return reply.code(404).send({ error: "Pending request not found" });
     const allowed = input.status === "cancelled" ? row.sender_id === user.id : row.recipient_id === user.id;
@@ -252,7 +252,7 @@ export async function buildApp() {
       return { status: input.status };
     }
     const roomName = `meeting-${request.params.requestId}`;
-    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,status,started_at) VALUES($1,'waiting',now()) RETURNING id", [roomName]);
+    const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,status,started_at) VALUES($1,$2,'waiting',now()) RETURNING id", [roomName, `${row.sender_name} & ${row.recipient_name}`]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
     return { status: input.status, meetingId: meeting.rows[0].id };
@@ -272,7 +272,7 @@ export async function buildApp() {
   });
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/token", async (request, reply) => {
-    const input = z.object({ displayName: z.string().min(1).max(80).optional() }).parse(request.body ?? {});
+    const input = z.object({ displayName: z.string().min(1).max(80).optional(), title: z.string().trim().min(1).max(100).optional() }).parse(request.body ?? {});
     const appId = process.env.AGORA_APP_ID;
     const appCertificate = process.env.AGORA_APP_CERTIFICATE;
     if (!appId || !appCertificate) {
@@ -284,8 +284,8 @@ export async function buildApp() {
     let channelName = `common-room-${request.params.meetingId}`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 63);
     if (database && authenticated) {
       if (request.params.meetingId === "main") {
-        let publicMeeting = await database.query("SELECT id,agora_channel_name FROM meetings WHERE signalwire_room_name LIKE 'common-room-main-%' AND status IN ('waiting','active') ORDER BY created_at DESC LIMIT 1");
-        if (!publicMeeting.rowCount) publicMeeting = await database.query("INSERT INTO meetings(signalwire_room_name,agora_channel_name,status,started_at) VALUES($1,'common-room-main','waiting',now()) RETURNING id,agora_channel_name", [`common-room-main-${randomBytes(10).toString("hex")}`]);
+        let publicMeeting = await database.query("SELECT id,agora_channel_name,title FROM meetings WHERE signalwire_room_name LIKE 'common-room-main-%' AND status IN ('waiting','active') ORDER BY created_at DESC LIMIT 1");
+        if (!publicMeeting.rowCount) publicMeeting = await database.query("INSERT INTO meetings(signalwire_room_name,agora_channel_name,title,status,started_at) VALUES($1,'common-room-main',$2,'waiting',now()) RETURNING id,agora_channel_name,title", [`common-room-main-${randomBytes(10).toString("hex")}`, input.title ?? `Common Room · ${new Date().toISOString().slice(0,10)}`]);
         trackedMeetingId = publicMeeting.rows[0].id;
         channelName = publicMeeting.rows[0].agora_channel_name;
         await database.query("INSERT INTO meeting_participants(meeting_id,user_id,joined_at) VALUES($1,$2,now()) ON CONFLICT(meeting_id,user_id) DO UPDATE SET joined_at=now(),left_at=NULL", [trackedMeetingId, authenticated.id]);
@@ -301,7 +301,8 @@ export async function buildApp() {
     const uid = authenticated?.id ?? `guest-${randomBytes(12).toString("hex")}`;
     const expiresInSeconds = 60 * 60;
     const token = AgoraToken.RtcTokenBuilder.buildTokenWithUserAccount(appId, appCertificate, channelName, uid, AgoraToken.RtcRole.PUBLISHER, expiresInSeconds, expiresInSeconds);
-    return { appId, token, channelName, uid, meetingId: trackedMeetingId, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
+    const meetingTitle = database ? (await database.query("SELECT title FROM meetings WHERE id=$1", [trackedMeetingId])).rows[0]?.title : input.title ?? "Common Room meeting";
+    return { appId, token, channelName, uid, meetingId: trackedMeetingId, meetingTitle, displayName: authenticated?.displayName ?? input.displayName ?? "Guest" };
   });
 
   app.post<{ Params: { meetingId: string } }>("/api/meetings/:meetingId/recording/start", async (request, reply) => {
