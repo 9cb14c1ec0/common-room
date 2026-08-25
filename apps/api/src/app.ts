@@ -200,6 +200,19 @@ export async function buildApp() {
       FROM meetings m WHERE (m.is_private=false OR EXISTS(SELECT 1 FROM meeting_participants access_participant WHERE access_participant.meeting_id=m.id AND access_participant.user_id=$1)) AND ($2='' OR m.title ILIKE '%'||$2||'%' OR coalesce(m.summary,'') ILIKE '%'||$2||'%' OR EXISTS(SELECT 1 FROM action_items search_item WHERE search_item.meeting_id=m.id AND search_item.status<>'dismissed' AND search_item.description ILIKE '%'||$2||'%')) ORDER BY m.created_at DESC LIMIT 100`, [user.id, query]);
     return { meetings: result.rows.map((row) => ({ id: row.id, title: row.title, occurredAt: row.started_at, durationMinutes: row.started_at && row.ended_at ? Math.round((new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000) : 0, participants: [], summary: row.summary, processingStatus: row.recording_status, processingError: row.processing_error, actionItemCount: row.action_items.length, actionItems: row.action_items })) };
   });
+  app.delete<{ Params: { meetingId: string } }>("/api/meetings/:meetingId", async (request, reply) => {
+    if (!database) {
+      const meetingIndex = meetings.findIndex((meeting) => meeting.id === request.params.meetingId);
+      if (meetingIndex === -1) return reply.code(404).send({ error: "Meeting note not found" });
+      meetings.splice(meetingIndex, 1);
+      return reply.code(204).send();
+    }
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    const result = await database.query("DELETE FROM meetings WHERE id=$1 RETURNING id", [request.params.meetingId]);
+    if (!result.rowCount) return reply.code(404).send({ error: "Meeting note not found" });
+    return reply.code(204).send();
+  });
   app.get("/api/action-items/mine", async (request, reply) => {
     if (!database) return { actionItems: [] };
     const user = await currentUser(database, request);
