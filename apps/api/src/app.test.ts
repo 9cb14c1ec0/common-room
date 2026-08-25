@@ -28,3 +28,18 @@ test("door and meeting presence changes are reflected in the directory", async (
   await app.inject({ method: "PATCH", url: "/api/presence", payload: { doorOpen: true } });
   await app.close();
 });
+
+test("an administrator can delete a meeting note", async () => {
+  const app = await buildApp();
+  const deletion = await app.inject({ method: "DELETE", url: "/api/meetings/weekly-product" });
+  assert.equal(deletion.statusCode, 204);
+
+  const notes = await app.inject({ method: "GET", url: "/api/meetings" });
+  assert.equal(notes.statusCode, 200);
+  assert.equal(notes.json().meetings.some((meeting: { id: string }) => meeting.id === "weekly-product"), false);
+
+  const missing = await app.inject({ method: "DELETE", url: "/api/meetings/weekly-product" });
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), { error: "Meeting note not found" });
+  await app.close();
+});
