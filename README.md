@@ -1,10 +1,142 @@
 # Common Room
 
-An internal office presence and conferencing application. Team members can signal availability, request a meeting, join a shared Agora channel, and receive transcripts, summaries, and proposed action items.
+Common Room is a private virtual-office and conferencing application for teams. Each user has an office with an open or closed door, teammates can knock to request a private conversation, and everyone can join the shared Common Room. Calls are audio-first with optional camera and screen sharing.
+
+Public Common Room sessions are recorded, transcribed, summarized, and made searchable across the company. Their action items are assigned to individual users. Private office meetings and their notes remain visible only to their participants.
+
+## Features
+
+- Invite-only accounts with administrator-managed users
+- Office presence, door state, occupancy, and knock-to-enter requests
+- Public Common Room and private two-person office meetings
+- Audio-first calls with optional video and screen sharing
+- Browser notifications for knocks and accepted invitations
+- Self-hosted Agora audio recording in the background worker
+- ElevenLabs transcription
+- OpenRouter summaries, decisions, and action-item extraction
+- Searchable meeting notes and personal action-item workflow
+- Automatic PostgreSQL migrations
+
+## Architecture
+
+This repository is an npm workspace containing:
+
+- `apps/web` — React and Vite browser client
+- `apps/api` — Fastify API, authentication, presence, and Agora token service
+- `apps/worker` — Docker worker for recording, transcription, and analysis
+- `packages/contracts` — shared client/server types
+- `db` — PostgreSQL schema and migrations
+- `render.yaml` — portable Render Blueprint
+
+The web client calls the public API. The API and worker share PostgreSQL. The API mints short-lived Agora channel tokens, while the worker joins active channels as an audio-only recorder. Recordings exist only in the worker's ephemeral `/tmp` storage until successfully transcribed, then they are deleted.
+
+## Provider accounts
+
+A complete production deployment requires:
+
+1. An Agora project with App Certificate authentication enabled. Copy its App ID and App Certificate.
+2. An ElevenLabs API key with access to Speech to Text.
+3. An OpenRouter API key with access to the model configured by `OPENROUTER_MODEL`.
+4. A Render account connected to the Git repository.
+
+The application does not require S3, Redis, or a separate object-storage service.
+
+## Deploy to Render with the Blueprint
+
+The Blueprint creates a static web application, Node API, Docker background worker, and PostgreSQL database.
+
+1. Fork or clone this repository into your Git provider.
+2. In Render, choose **New → Blueprint** and select the repository.
+3. Apply `render.yaml` and allow Render to create all four resources.
+4. Enter the secret values requested during initial Blueprint creation. If Render creates the services before asking for URL values, finish creating them and set the two URL variables in the service dashboards afterward.
+5. Configure the environment variables below, save them, and redeploy affected services.
+
+### Web static site
+
+Set:
+
+```text
+VITE_API_URL=https://<your-api-hostname>
+```
+
+Use the API service's public HTTPS URL with no trailing slash. `VITE_API_URL` is compiled into the browser bundle, so changing it requires a new web build/deploy.
+
+### API web service
+
+Set:
+
+```text
+WEB_ORIGIN=https://<your-web-hostname>
+AGORA_APP_ID=<your Agora App ID>
+AGORA_APP_CERTIFICATE=<your Agora App Certificate>
+```
+
+Use the static site's public HTTPS URL for `WEB_ORIGIN`, with no trailing slash. It must exactly match the browser origin because authenticated requests use cookies and credentialed CORS.
+
+The Blueprint supplies `DATABASE_URL` from PostgreSQL and generates `SESSION_SECRET`. Do not copy either value into source control.
+
+### Background worker
+
+Set:
+
+```text
+AGORA_APP_ID=<the same Agora App ID used by the API>
+AGORA_APP_CERTIFICATE=<the same Agora App Certificate used by the API>
+ELEVENLABS_API_KEY=<your ElevenLabs API key>
+OPENROUTER_API_KEY=<your OpenRouter API key>
+```
+
+The Blueprint also configures:
+
+```text
+OPENROUTER_MODEL=openai/gpt-5.6-luna
+EMPTY_ROOM_GRACE_MS=10000
+```
+
+The worker image builds the pinned Agora Linux Recording Java SDK using JDK 17. Its first Docker build can take several minutes while Maven downloads and compiles the recorder.
+
+### Create the first administrator
+
+After the web and API deployments are healthy, visit the web URL. If the database contains no users, the application displays **Create the first account**. That first account becomes an administrator and can invite or delete other users.
+
+Alternatively, set these variables on the API before its first successful start:
+
+```text
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=<a password of at least 10 characters>
+BOOTSTRAP_ADMIN_NAME=Administrator
+```
+
+The bootstrap variables are only used when the `users` table is empty. Remove the password variable after the account is created.
+
+### Migrations
+
+No separate migration command is required. At API startup, Common Room creates the `schema_migrations` table and applies unapplied SQL migrations from `db` in a transaction.
+
+### Verify the deployment
+
+1. Open `https://<your-api-hostname>/health`. It should report `ok: true` and `database: "connected"`.
+2. Open the web site, create the first administrator, and sign in.
+3. Invite a second test user and sign in from another browser profile.
+4. Join the Common Room from both profiles and confirm two-way audio.
+5. Leave the room and watch the worker logs for recording finalization, transcription, and analysis.
+6. Confirm that the completed session appears in meeting-note search with its summary and action items.
+
+If the site loads but API actions fail, check `VITE_API_URL` and `WEB_ORIGIN` first. If calls report that calling is not configured, confirm the Agora values are present on both the API and worker. If calls work but notes never appear, inspect the worker logs and confirm the ElevenLabs and OpenRouter keys.
+
+## Custom domains
+
+Custom domains work without code changes. Set `VITE_API_URL` to the API custom domain and `WEB_ORIGIN` to the web custom domain, then redeploy both services. Keep both URLs on HTTPS and omit trailing slashes.
 
 ## Local development
 
-Requirements: Node.js 22 or newer.
+Requirements:
+
+- Node.js 22 or newer
+- PostgreSQL
+- Agora credentials for real calls
+
+Create the local environment file and install dependencies:
 
 ```bash
 cp .env.example .env
@@ -12,36 +144,49 @@ npm install
 npm run dev
 ```
 
-The web application runs at `http://localhost:5173` and proxies API requests to `http://localhost:4000`.
+Create the PostgreSQL database referenced by `DATABASE_URL` before starting. The API automatically runs migrations. The web app runs at `http://localhost:5173` and proxies `/api` and `/health` to `http://localhost:4000`.
 
-On Render, set `VITE_API_URL` on the static site to the public API service URL and set `WEB_ORIGIN` on the API to the static site's URL.
+Without `DATABASE_URL`, the API starts in an in-memory demonstration mode. Without Agora credentials, the dashboard works but joining a real call returns an integration-not-configured response.
 
-## Workspace layout
+The production recording worker depends on the Agora native SDK included by its Dockerfile. For an end-to-end local recording test, build and run that Docker image with access to the same PostgreSQL database and the worker environment variables. Running `npm run start:worker` directly does not install the native recorder.
 
-- `apps/web` — React web client, later shared by the Electron shell
-- `apps/api` — Fastify HTTP/WebSocket API and integration webhooks
-- `apps/worker` — durable recording/transcription/summary job consumer
-- `packages/contracts` — shared client/server types
-- `db/schema.sql` — initial PostgreSQL model
-- `render.yaml` — Render Blueprint
+## Environment reference
 
-## Current slice
+| Variable | Service | Required | Purpose |
+| --- | --- | --- | --- |
+| `VITE_API_URL` | Web | Production | Public HTTPS URL of the API; embedded at build time |
+| `WEB_ORIGIN` | API | Production | Exact allowed web origin and invitation-link origin |
+| `DATABASE_URL` | API, worker | Production | PostgreSQL connection string; supplied by Render |
+| `SESSION_SECRET` | API | Production | Session signing secret; generated by Render |
+| `AGORA_APP_ID` | API, worker | For calls | Agora project identifier |
+| `AGORA_APP_CERTIFICATE` | API, worker | For calls | Agora token-signing secret |
+| `ELEVENLABS_API_KEY` | Worker | For transcription | ElevenLabs Speech-to-Text credential |
+| `OPENROUTER_API_KEY` | Worker | For analysis | OpenRouter credential |
+| `OPENROUTER_MODEL` | Worker | No | Analysis model; defaults to `openai/gpt-5.6-luna` |
+| `EMPTY_ROOM_GRACE_MS` | Worker | No | Delay before an empty meeting recording is finalized |
+| `WORKER_POLL_INTERVAL_MS` | Worker | No | Worker polling interval; defaults to 5000 ms |
+| `RECORDING_TEMP_DIR` | Worker | No | Ephemeral recording directory |
+| `AGORA_RECORDER_JAR` | Worker | No | Recorder JAR path inside a custom worker image |
+| `BOOTSTRAP_ADMIN_EMAIL` | API | No | Creates the initial admin when paired with a password |
+| `BOOTSTRAP_ADMIN_PASSWORD` | API | No | Initial admin password; remove after bootstrap |
+| `BOOTSTRAP_ADMIN_NAME` | API | No | Initial administrator display name |
+| `PORT` | API | No | HTTP port; defaults to 4000 locally and is assigned by Render |
+| `NODE_ENV` | API, worker | No | Enables production cookies and PostgreSQL TLS behavior |
 
-The office dashboard, directory, meeting requests, health endpoint, presence socket, database design, and Render topology are present. The API uses deterministic demo data until authentication and persistence are connected.
+Never expose `AGORA_APP_CERTIFICATE`, `ELEVENLABS_API_KEY`, `OPENROUTER_API_KEY`, `SESSION_SECRET`, or `DATABASE_URL` to the browser or commit them to Git.
 
-## Integration order
+## Development commands
 
-1. Invite-only authentication and PostgreSQL repositories
-2. Redis-backed presence and meeting-request delivery
-3. Agora channel lifecycle webhooks and automatic recording
-4. Recording completion jobs and ElevenLabs transcription
-5. Structured meeting summaries and action-item confirmation
-6. Electron packaging, notification handling, and signed Windows releases
+```bash
+npm run dev       # web and API in watch mode
+npm run build     # build all workspaces
+npm run typecheck # type-check all workspaces
+npm test          # run tests
+```
 
-## Agora
+## Operational notes
 
-Create an Agora project secured with an App Certificate. Set `AGORA_APP_ID` and `AGORA_APP_CERTIFICATE` only on the API service. The browser receives a one-hour channel token; the App Certificate is never sent to it. Calls join with microphone audio only and publish video only after the user enables their camera.
-
-Automatic recording is self-hosted by the Docker-based Render worker using Agora's Linux Recording Java SDK. Set `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, and `ELEVENLABS_API_KEY` on the worker. It records mixed audio to an ephemeral local MP4, sends that file to ElevenLabs Scribe v2, and deletes it immediately after transcription. No object-storage service is required. A worker restart during an active meeting causes that temporary recording to be lost and the meeting to be marked failed.
-
-Set `OPENROUTER_API_KEY` on the worker to generate meeting summaries, decisions, and proposed action items. `OPENROUTER_MODEL` defaults to `openai/gpt-5.6-luna`. Assignees are accepted only when the returned name matches a real meeting participant.
+- Worker recordings are ephemeral. A worker restart during a live recording can lose that recording.
+- A recording is deleted immediately after a valid transcript is saved. Failed transcription attempts retain it temporarily for retry and eventually remove it after the retry limit.
+- Public Common Room notes are company-wide. Private office notes are restricted to meeting participants.
+- Browser notifications require each user to grant notification permission.

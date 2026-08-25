@@ -6,7 +6,7 @@ services:
     staticPublishPath: apps/web/dist
     envVars:
       - key: VITE_API_URL
-        value: https://common-room-api.onrender.com
+        sync: false
     routes:
       - type: rewrite
         source: /*
@@ -25,13 +25,17 @@ services:
       - key: NODE_ENV
         value: production
       - key: WEB_ORIGIN
-        value: https://common-room-web.onrender.com
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: common-room-db
           property: connectionString
       - key: SESSION_SECRET
         generateValue: true
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
 
   - type: worker
     name: common-room-worker

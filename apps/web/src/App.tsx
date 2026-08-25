@@ -7,7 +7,7 @@ import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneA
 const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
   ? configuredApiUrl
-  : window.location.hostname === "common-room-web.onrender.com" ? "https://common-room-api.onrender.com" : "";
+  : "";
 
 interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
