@@ -1,7 +1,9 @@
 node_modules
 dist
+release
 .env
 .env.local
 .DS_Store
 *.log
 *.tsbuildinfo
+apps/desktop/release

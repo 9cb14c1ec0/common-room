@@ -1,0 +1,47 @@
+appId: app.commonroom.desktop
+productName: Common Room
+copyright: Copyright © Common Room
+electronVersion: 43.4.1
+asar: true
+npmRebuild: false
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - preload.cjs
+  - renderer/**/*
+  - package.json
+extraMetadata:
+  name: common-room
+  main: dist/main.js
+artifactName: CommonRoom-${version}-${os}-${arch}.${ext}
+mac:
+  category: public.app-category.business
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSCameraUsageDescription: Common Room uses the camera when you turn it on in a meeting.
+    NSMicrophoneUsageDescription: Common Room uses the microphone for office calls.
+    NSAudioCaptureUsageDescription: Common Room captures audio during meetings.
+    NSScreenCaptureDescription: Common Room captures your screen when you share it in a meeting.
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  category: Network
+  executableName: common-room
+  syncDesktopName: true
+  synopsis: Desktop client for Common Room
+  maintainer: Common Room <maintainers@users.noreply.github.com>
+  target:
+    - AppImage
+    - deb
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
