@@ -56,6 +56,7 @@ export function App() {
   const [meetingTitle, setMeetingTitle] = useState("The Common Room");
   const [newMeetingTitle, setNewMeetingTitle] = useState("");
   const [roomMembers, setRoomMembers] = useState<RoomMember[]>([]);
+  const [speakingMemberIds, setSpeakingMemberIds] = useState<string[]>([]);
   const [myActionItems, setMyActionItems] = useState<ActionItem[]>([]);
   const [noteSearch, setNoteSearch] = useState("");
   const [deletingMeetingId, setDeletingMeetingId] = useState<string>();
@@ -257,7 +258,11 @@ export function App() {
         return [...current.filter((member) => member.id !== id), { id, name: existing?.name ?? memberName(id), audioMuted: existing?.audioMuted ?? true, videoMuted: existing?.videoMuted ?? true, ...changes }];
       });
       client.on("user-joined", (user) => updateMember(String(user.uid), {}));
-      client.on("user-left", (user) => setRoomMembers((current) => current.filter((member) => member.id !== String(user.uid))));
+      client.on("user-left", (user) => {
+        const id = String(user.uid);
+        setRoomMembers((current) => current.filter((member) => member.id !== id));
+        setSpeakingMemberIds((current) => current.filter((memberId) => memberId !== id));
+      });
       client.on("user-published", async (user, mediaType) => {
         await client.subscribe(user, mediaType);
         const id = String(user.uid);
@@ -269,7 +274,15 @@ export function App() {
           if (target) user.videoTrack?.play(target, { fit: "contain", mirror: false });
         }
       });
-      client.on("user-unpublished", (user, mediaType) => updateMember(String(user.uid), mediaType === "audio" ? { audioMuted: true } : { videoMuted: true }));
+      client.on("user-unpublished", (user, mediaType) => {
+        const id = String(user.uid);
+        updateMember(id, mediaType === "audio" ? { audioMuted: true } : { videoMuted: true });
+        if (mediaType === "audio") setSpeakingMemberIds((current) => current.filter((memberId) => memberId !== id));
+      });
+      client.enableAudioVolumeIndicator();
+      client.on("volume-indicator", (volumes) => {
+        setSpeakingMemberIds(volumes.filter(({ level }) => level > 5).map(({ uid: memberUid }) => String(memberUid)));
+      });
       await client.join(appId, channelName, token, uid);
       const microphone = await AgoraRTC.createMicrophoneAudioTrack(selectedMicrophoneId ? { microphoneId: selectedMicrophoneId } : undefined);
       await client.publish(microphone);
@@ -315,6 +328,7 @@ export function App() {
     localMediaRef.current?.getTracks().forEach((track) => track.stop());
     localMediaRef.current = null;
     setRoomMembers([]);
+    setSpeakingMemberIds([]);
     setCameraOn(false);
     setScreenSharing(false);
     setMicOn(true);
@@ -330,6 +344,7 @@ export function App() {
     if (roomMode === "agora" && microphoneTrackRef.current) {
       await microphoneTrackRef.current.setEnabled(next);
       setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, audioMuted: !next } : member));
+      if (!next && roomUidRef.current) setSpeakingMemberIds((current) => current.filter((memberId) => memberId !== roomUidRef.current));
     } else {
       localMediaRef.current?.getAudioTracks().forEach((track) => track.enabled = next);
     }
@@ -552,7 +567,14 @@ export function App() {
       const hasRoomVideo = cameraOn || screenSharing || roomMembers.some((member) => !member.videoMuted);
       return <div className={`video-stage ${hasRoomVideo ? "has-video" : "audio-only"}`}>
         {hasRoomVideo && <div className="remote-video-grid">{displayMembers.filter((member) => member.id !== currentUserId && !member.videoMuted).map((member) => <div className="remote-video-tile" id={`remote-video-${member.id}`} key={member.id} />)}</div>}
-        {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => <div className="audio-participant" key={member.id}><div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><strong>{member.name}</strong><span>{member.audioMuted ? <><MicOff size={13}/> Muted</> : <><Mic size={13}/> Listening</>}</span></div>)}</div>}
+        {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => {
+          const isSpeaking = !member.audioMuted && speakingMemberIds.includes(member.id);
+          return <div className={`audio-participant${isSpeaking ? " speaking" : ""}`} key={member.id} aria-label={`${member.name}, ${member.audioMuted ? "muted" : isSpeaking ? "speaking" : "listening"}`}>
+            <div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div>
+            <strong>{member.name}</strong>
+            <span className="audio-status">{member.audioMuted ? <><MicOff size={13}/> Muted</> : isSpeaking ? <><span className="voice-bars" aria-hidden="true"><i/><i/><i/></span> Speaking</> : <><Mic size={13}/> Listening</>}</span>
+          </div>;
+        })}</div>}
         {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><span className={`mini-avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</span><small>{member.name}</small></div>)}</div>}
         {roomMode === "agora" && cameraOn && <div className="local-camera-preview" ref={agoraVideoRef} />}
         {roomMode === "agora" && screenSharing && <div className="local-screen-preview" ref={screenVideoRef} />}
