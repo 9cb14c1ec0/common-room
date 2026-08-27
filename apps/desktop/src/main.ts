@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, shell, ipcMain, session } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent, emptyWorkspaceState, type WorkspaceState } from "./workspace.js";
+import { normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent, emptyWorkspaceState, isSameOrigin, type WorkspaceState } from "./workspace.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const preloadPath = path.join(root, "preload.cjs");
@@ -11,6 +11,24 @@ const loadErrorPath = path.join(root, "renderer", "load-error.html");
 
 let mainWindow: BrowserWindow | undefined;
 let showingShellPage = false;
+let connectInFlight = false;
+const rendererDir = path.resolve(path.join(root, "renderer"));
+
+function isLocalRendererUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "file:") return false;
+    const resolved = path.resolve(fileURLToPath(parsed));
+    return resolved === rendererDir || resolved.startsWith(rendererDir + path.sep);
+  } catch {
+    return false;
+  }
+}
+
+function assertTrustedShell(event: Electron.IpcMainInvokeEvent) {
+  const url = event.senderFrame?.url;
+  if (!url || !isLocalRendererUrl(url)) throw new Error("Workspace actions are only available from the desktop shell.");
+}
 
 function statePath() {
   return path.join(app.getPath("userData"), "workspace.json");
@@ -58,26 +76,17 @@ function createWindow() {
 function attachNavigationGuards(window: BrowserWindow) {
   window.webContents.setWindowOpenHandler(({ url }) => {
     const workspace = loadState().url;
-    try {
-      if (workspace && new URL(url).origin === new URL(workspace).origin) return { action: "allow" };
-    } catch {
-      /* fall through */
-    }
+    if (workspace && isSameOrigin(url, workspace)) return { action: "allow" };
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
     return { action: "deny" };
   });
 
   window.webContents.on("will-navigate", (event, url) => {
-    if (showingShellPage) {
-      if (!url.startsWith("file:")) event.preventDefault();
-      return;
-    }
-    try {
-      const protocol = new URL(url).protocol;
-      if (protocol !== "http:" && protocol !== "https:") event.preventDefault();
-    } catch {
-      event.preventDefault();
-    }
+    if (isLocalRendererUrl(url)) return;
+    const workspace = loadState().url;
+    if (workspace && isSameOrigin(url, workspace)) return;
+    event.preventDefault();
+    if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
   });
 
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
@@ -112,19 +121,25 @@ async function loadWorkspace(url: string) {
 }
 
 async function connectToWorkspace(rawUrl: unknown, force = false) {
+  if (connectInFlight) return { ok: false as const, code: "invalid" as const, error: "A connection is already in progress." };
   if (typeof rawUrl !== "string") return { ok: false as const, code: "invalid" as const, error: "Enter a workspace URL." };
   const normalized = normalizeWorkspaceUrl(rawUrl);
   if (!normalized.ok) return normalized;
-  if (!force) {
-    const probe = await probeWorkspace(normalized.url);
-    if (!probe.ok) return probe;
+  connectInFlight = true;
+  try {
+    if (!force) {
+      const probe = await probeWorkspace(normalized.url);
+      if (!probe.ok) return probe;
+    }
+    const state = loadState();
+    state.url = normalized.url;
+    state.recents = rememberRecent(normalized.url, state.recents);
+    saveState(state);
+    await loadWorkspace(normalized.url);
+    return { ok: true as const };
+  } finally {
+    connectInFlight = false;
   }
-  const state = loadState();
-  state.url = normalized.url;
-  state.recents = rememberRecent(normalized.url, state.recents);
-  saveState(state);
-  await loadWorkspace(normalized.url);
-  return { ok: true as const };
 }
 
 function buildMenu() {
@@ -149,18 +164,24 @@ function buildMenu() {
 }
 
 function registerIpc() {
-  ipcMain.handle("workspace:get", () => loadState());
-  ipcMain.handle("workspace:connect", async (_event, payload: { url?: unknown; force?: unknown } | string) => {
+  ipcMain.handle("workspace:get", (event) => {
+    assertTrustedShell(event);
+    return loadState();
+  });
+  ipcMain.handle("workspace:connect", async (event, payload: { url?: unknown; force?: unknown } | string) => {
+    assertTrustedShell(event);
     if (typeof payload === "string") return connectToWorkspace(payload, false);
     return connectToWorkspace(payload?.url, Boolean(payload?.force));
   });
-  ipcMain.handle("workspace:disconnect", async () => {
+  ipcMain.handle("workspace:disconnect", async (event) => {
+    assertTrustedShell(event);
     const state = loadState();
     state.url = null;
     saveState(state);
     await showOnboarding();
   });
-  ipcMain.handle("workspace:retry", async () => {
+  ipcMain.handle("workspace:retry", async (event) => {
+    assertTrustedShell(event);
     const url = loadState().url;
     if (!url) {
       await showOnboarding();
@@ -172,8 +193,9 @@ function registerIpc() {
 
 function registerPermissions() {
   const allowed = new Set(["media", "mediaKeySystem", "display-capture", "notifications", "clipboard-sanitized-write"]);
-  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
-    callback(allowed.has(permission));
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+    const workspace = loadState().url;
+    callback(Boolean(workspace && allowed.has(permission) && isSameOrigin(contents.getURL(), workspace)));
   });
 }
 

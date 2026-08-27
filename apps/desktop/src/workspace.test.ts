@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultSchemeForHost, normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent } from "./workspace.js";
+import { defaultSchemeForHost, isSameOrigin, normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent } from "./workspace.js";
 
 test("normalizeWorkspaceUrl adds https and strips trailing slashes", () => {
   const result = normalizeWorkspaceUrl(" common-room.example.com/app/ ");
@@ -34,6 +34,13 @@ test("rememberRecent puts the latest URL first and de-duplicates", () => {
     "https://c.example"
   ]);
   assert.deepEqual(rememberRecent("https://new.example", ["1", "2", "3", "4", "5"], 5), ["https://new.example", "1", "2", "3", "4"]);
+});
+
+test("isSameOrigin compares origins and rejects invalid URLs", () => {
+  assert.equal(isSameOrigin("https://office.example/notes", "https://office.example"), true);
+  assert.equal(isSameOrigin("https://office.example/notes", "https://other.example"), false);
+  assert.equal(isSameOrigin("http://office.example", "https://office.example"), false);
+  assert.equal(isSameOrigin("not-a-url", "https://office.example"), false);
 });
 
 test("parseWorkspaceState recovers from malformed files", () => {

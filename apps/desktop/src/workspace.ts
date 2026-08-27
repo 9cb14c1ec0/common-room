@@ -26,6 +26,14 @@ export function rememberRecent(url: string, recents: string[], limit = 5): strin
   return [url, ...recents.filter((item) => item !== url)].slice(0, limit);
 }
 
+export function isSameOrigin(url: string, workspaceUrl: string): boolean {
+  try {
+    return new URL(url).origin === new URL(workspaceUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
 export function parseWorkspaceState(value: unknown): WorkspaceState {
   if (!value || typeof value !== "object") return emptyWorkspaceState();
   const record = value as { url?: unknown; recents?: unknown };
