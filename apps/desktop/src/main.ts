@@ -1,8 +1,9 @@
-import { app, BrowserWindow, Menu, Notification, shell, ipcMain, session } from "electron";
+import { app, BrowserWindow, Menu, Notification, desktopCapturer, shell, ipcMain, screen, session } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent, emptyWorkspaceState, isSameOrigin, type WorkspaceState } from "./workspace.js";
+import { canShareDisplay, selectDisplaySource } from "./screenShare.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const preloadPath = path.join(root, "preload.cjs");
@@ -218,6 +219,22 @@ function registerPermissions() {
     const workspace = loadState().url;
     callback(Boolean(workspace && allowed.has(permission) && isSameOrigin(contents.getURL(), workspace)));
   });
+
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!canShareDisplay(request, loadState().url)) {
+      callback({});
+      return;
+    }
+
+    try {
+      const sources = await desktopCapturer.getSources({ types: ["screen"] });
+      const source = selectDisplaySource(sources, screen.getPrimaryDisplay().id);
+      callback(source ? { video: source } : {});
+    } catch (error) {
+      console.error("Unable to select a screen-sharing source", error);
+      callback({});
+    }
+  }, { useSystemPicker: true });
 }
 
 const gotLock = app.requestSingleInstanceLock();
