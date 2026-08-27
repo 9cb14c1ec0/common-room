@@ -61,13 +61,20 @@ export function App() {
   const [noteSearch, setNoteSearch] = useState("");
   const [deletingMeetingId, setDeletingMeetingId] = useState<string>();
   const [editingAction, setEditingAction] = useState<{ id: string; description: string; dueAt: string }>();
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => typeof Notification === "undefined" ? "denied" : Notification.permission);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => window.commonRoomDesktop ? "granted" : typeof Notification === "undefined" ? "denied" : Notification.permission);
   const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     if (inviteToken) void fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}`).then(async (response) => { if (!response.ok) throw new Error((await response.json()).error); setInvitation(await response.json()); }).catch((error) => setAuthError(error.message));
     void refreshSession();
   }, []);
+
+  useEffect(() => {
+    if (!window.commonRoomDesktop && notificationPermission === "granted") void registerNotificationServiceWorker();
+    const handleNotificationClick = (event: MessageEvent) => { if (event.data?.type === "notification-click") setView("office"); };
+    navigator.serviceWorker?.addEventListener("message", handleNotificationClick);
+    return () => navigator.serviceWorker?.removeEventListener("message", handleNotificationClick);
+  }, [notificationPermission]);
 
   useEffect(() => {
     if (!auth?.user || inviteToken) return;
@@ -84,8 +91,8 @@ export function App() {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
           if (announce) for (const item of nextRequests) {
             const previous = knownRequestStatesRef.current.get(item.id);
-            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); showBrowserNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
-            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); showBrowserNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
+            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); void showSystemNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
+            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); void showSystemNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
           }
           knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
           setRequests(nextRequests);
@@ -207,13 +214,34 @@ export function App() {
     window.setTimeout(() => setToast(undefined), 2600);
   }
 
-  function showBrowserNotification(title: string, body: string, tag: string) {
+  async function registerNotificationServiceWorker() {
+    if (!navigator.serviceWorker) return undefined;
+    return navigator.serviceWorker.register(`${import.meta.env.BASE_URL}notification-sw.js`);
+  }
+
+  async function showSystemNotification(title: string, body: string, tag: string) {
+    if (window.commonRoomDesktop) {
+      try {
+        if (await window.commonRoomDesktop.showNotification(title, body)) return;
+      } catch { /* fall through to browser notifications */ }
+    }
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    const notification = new Notification(title, { body, tag });
-    notification.onclick = () => { window.focus(); setView("office"); notification.close(); };
+    if (navigator.serviceWorker) {
+      try {
+        const registration = await registerNotificationServiceWorker();
+        if (!registration) throw new Error("Service workers are unavailable");
+        await registration.showNotification(title, { body, tag, data: { url: window.location.href } });
+        return;
+      } catch { /* fall back to the page Notification API */ }
+    }
+    try {
+      const notification = new Notification(title, { body, tag });
+      notification.onclick = () => { window.focus(); setView("office"); notification.close(); };
+    } catch { /* notification delivery is unavailable */ }
   }
 
   async function enableNotifications() {
+    if (window.commonRoomDesktop) { setNotificationPermission("granted"); showToast("Desktop notifications enabled"); return; }
     if (typeof Notification === "undefined") { showToast("Browser notifications are not supported here"); return; }
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
@@ -611,7 +639,7 @@ export function App() {
 
       {view === "office" && <><section className="room-grid"><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><h2>My Office</h2><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> DOOR {doorOpen ? "OPEN" : "CLOSED"}</span></div>
-        <button type="button" className="close-door" disabled={doorSaving} onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorSaving ? "Saving…" : doorOpen ? "Close door" : "Open door"}</button>
+        <div className="office-header-actions">{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}<button type="button" className="close-door" disabled={doorSaving} onClick={() => void toggleDoor()}>{doorOpen ? <DoorOpen size={18} /> : <DoorClosed size={18} />} {doorSaving ? "Saving…" : doorOpen ? "Close door" : "Open door"}</button></div>
       </section><article className="common-room-compact"><div><p className="eyebrow">SHARED SPACE</p><h3>The Common Room</h3><label className="meeting-title-input"><Mic size={14} /><input value={newMeetingTitle} onChange={(event) => setNewMeetingTitle(event.target.value)} maxLength={100} placeholder="Meeting title (optional)" /></label></div><button className="enter-room" onClick={() => void enterRoom("main", newMeetingTitle)}>Enter room <ArrowUpRight size={15} /></button></article></section>
 
       <section className="section-block">
