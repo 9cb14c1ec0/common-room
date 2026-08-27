@@ -18,3 +18,7 @@ if (isLocalShell()) {
     retry: () => ipcRenderer.invoke("workspace:retry")
   });
 }
+
+contextBridge.exposeInMainWorld("commonRoomDesktop", {
+  showNotification: (title, body) => ipcRenderer.invoke("notification:show", { title, body })
+});

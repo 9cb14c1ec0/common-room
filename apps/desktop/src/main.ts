@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, ipcMain, session } from "electron";
+import { app, BrowserWindow, Menu, Notification, shell, ipcMain, session } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,12 @@ function isLocalRendererUrl(url: string): boolean {
 function assertTrustedShell(event: Electron.IpcMainInvokeEvent) {
   const url = event.senderFrame?.url;
   if (!url || !isLocalRendererUrl(url)) throw new Error("Workspace actions are only available from the desktop shell.");
+}
+
+function assertTrustedWorkspace(event: Electron.IpcMainInvokeEvent) {
+  const url = event.senderFrame?.url;
+  const workspace = loadState().url;
+  if (!url || !workspace || !isSameOrigin(url, workspace)) throw new Error("Notifications are only available to the connected workspace.");
 }
 
 function statePath() {
@@ -189,6 +195,21 @@ function registerIpc() {
     }
     await loadWorkspace(url);
   });
+  ipcMain.handle("notification:show", (event, payload: { title?: unknown; body?: unknown }) => {
+    assertTrustedWorkspace(event);
+    if (!Notification.isSupported()) return false;
+    const title = typeof payload?.title === "string" ? payload.title.slice(0, 120) : "Common Room";
+    const body = typeof payload?.body === "string" ? payload.body.slice(0, 500) : "";
+    const notification = new Notification({ title, body });
+    notification.on("click", () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    });
+    notification.show();
+    return true;
+  });
 }
 
 function registerPermissions() {
@@ -203,6 +224,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
+  if (process.platform === "win32") app.setAppUserModelId("app.commonroom.desktop");
+
   app.on("second-instance", () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
