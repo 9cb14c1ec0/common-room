@@ -9,7 +9,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "start:api": "npm run start -w @office/api",
-    "start:worker": "npm run start -w @office/worker"
+    "start:worker": "npm run start -w @office/worker",
+    "dev:desktop": "npm run dev -w @office/desktop",
+    "dist:desktop": "npm run dist -w @office/desktop"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

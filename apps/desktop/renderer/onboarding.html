@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:;" />
+    <title>Choose your workspace</title>
+    <link rel="stylesheet" href="./onboarding.css" />
+  </head>
+  <body>
+    <main class="auth-screen">
+      <form class="auth-card" id="form">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 4h3a2 2 0 0 1 2 2v14" />
+            <path d="M2 20h3" />
+            <path d="M13 20h9" />
+            <path d="M10 12v.01" />
+            <path d="M13 4.562v16.157a1 1 0 0 1-1.242.97L5 20V5.562a2 2 0 0 1 1.515-1.94l4-1A2 2 0 0 1 13 4.561Z" />
+          </svg>
+        </span>
+        <p class="eyebrow">COMMON ROOM</p>
+        <h1>Choose your workspace</h1>
+        <p>Select the Common Room URL this app should connect to. Use the same address you open in a browser.</p>
+
+        <section id="recents" class="choice-list" hidden>
+          <p class="choice-label">Recent workspaces</p>
+        </section>
+
+        <p class="choice-label">Suggested</p>
+        <button type="button" class="choice" data-url="http://localhost:5173">
+          <span>
+            <strong>Local workspace</strong>
+            <small>http://localhost:5173</small>
+          </span>
+        </button>
+
+        <label>
+          Custom workspace URL
+          <input id="url" name="url" type="text" inputmode="url" spellcheck="false" autocomplete="url" placeholder="https://common-room.example.com" required />
+        </label>
+
+        <div id="error" class="auth-error" hidden role="alert"></div>
+        <button type="submit" id="connect">Connect</button>
+        <button type="button" id="anyway" class="secondary" hidden>Connect anyway</button>
+      </form>
+    </main>
+    <script src="./onboarding.js"></script>
+  </body>
+</html>

@@ -24,6 +24,7 @@ This repository is an npm workspace containing:
 - `apps/web` — React and Vite browser client
 - `apps/api` — Fastify API, authentication, presence, and Agora token service
 - `apps/worker` — Docker worker for recording, transcription, and analysis
+- `apps/desktop` — Electron desktop client with a workspace-URL onboarding flow
 - `packages/contracts` — shared client/server types
 - `db` — PostgreSQL schema and migrations
 - `render.yaml` — portable Render Blueprint
@@ -150,6 +151,19 @@ Without `DATABASE_URL`, the API starts in an in-memory demonstration mode. Witho
 
 The production recording worker depends on the Agora native SDK included by its Dockerfile. For an end-to-end local recording test, build and run that Docker image with access to the same PostgreSQL database and the worker environment variables. Running `npm run start:worker` directly does not install the native recorder.
 
+## Desktop app
+
+The Electron client is a desktop shell around a Common Room web deployment. On first launch it shows an onboarding screen so the user can select which workspace URL to connect to — a recent workspace, the local Vite app at `http://localhost:5173`, or a custom URL. The chosen address is saved and loaded on later launches. Use **Workspace → Change workspace…** to pick a different URL.
+
+Enter the web URL you normally open in a browser, not the API hostname. The desktop app probes the URL before connecting; if the probe fails, you can still choose **Connect anyway**.
+
+```bash
+npm run dev:desktop    # compile the Electron main process and launch it
+npm run dist:desktop   # package platform installers into apps/desktop/release
+```
+
+GitHub Actions workflow `.github/workflows/desktop.yml` type-checks and tests the desktop package, then builds unsigned Linux, macOS, and Windows installers and uploads them as artifacts. macOS and Windows will show an unsigned-app warning until signing certificates are configured.
+
 ## Environment reference
 
 | Variable | Service | Required | Purpose |
@@ -178,10 +192,12 @@ Never expose `AGORA_APP_CERTIFICATE`, `ELEVENLABS_API_KEY`, `OPENROUTER_API_KEY`
 ## Development commands
 
 ```bash
-npm run dev       # web and API in watch mode
-npm run build     # build all workspaces
-npm run typecheck # type-check all workspaces
-npm test          # run tests
+npm run dev          # web and API in watch mode
+npm run dev:desktop  # launch the Electron desktop client
+npm run build        # build all workspaces
+npm run typecheck    # type-check all workspaces
+npm test             # run tests
+npm run dist:desktop # package desktop installers for the current OS
 ```
 
 ## Operational notes

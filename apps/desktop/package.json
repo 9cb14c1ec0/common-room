@@ -1,0 +1,28 @@
+{
+  "name": "@office/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop client for Common Room",
+  "homepage": "https://github.com/9cb14c1ec0/common-room",
+  "author": {
+    "name": "Common Room",
+    "email": "maintainers@users.noreply.github.com"
+  },
+  "desktopName": "common-room.desktop",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.json && electron .",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "dist": "npm run build && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "electron": "43.4.1",
+    "electron-builder": "^26.15.7",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
