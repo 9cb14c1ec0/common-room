@@ -25,6 +25,11 @@ export function App() {
   const [toast, setToast] = useState<string>();
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(false);
+  const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
+  const [selectedCameraId, setSelectedCameraId] = useState("");
+  const [switchingDevice, setSwitchingDevice] = useState<"microphone" | "camera">();
   const videoRef = useRef<HTMLVideoElement>(null);
   const agoraVideoRef = useRef<HTMLDivElement>(null);
   const screenVideoRef = useRef<HTMLDivElement>(null);
@@ -96,6 +101,24 @@ export function App() {
     const timer = window.setTimeout(() => void loadMeetingNotes(noteSearch), 250);
     return () => window.clearTimeout(timer);
   }, [noteSearch, view, auth?.user?.id]);
+
+  useEffect(() => {
+    if (view !== "room" || !navigator.mediaDevices?.enumerateDevices) return;
+    const refresh = () => void refreshMediaDevices();
+    refresh();
+    navigator.mediaDevices.addEventListener("devicechange", refresh);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", refresh);
+  }, [view]);
+
+  async function refreshMediaDevices() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const nextMicrophones = devices.filter((device) => device.kind === "audioinput");
+    const nextCameras = devices.filter((device) => device.kind === "videoinput");
+    setMicrophones(nextMicrophones);
+    setCameras(nextCameras);
+    setSelectedMicrophoneId((current) => nextMicrophones.some((device) => device.deviceId === current) ? current : nextMicrophones[0]?.deviceId ?? "");
+    setSelectedCameraId((current) => nextCameras.some((device) => device.deviceId === current) ? current : nextCameras[0]?.deviceId ?? "");
+  }
 
   async function refreshSession() {
     try {
@@ -248,7 +271,7 @@ export function App() {
       });
       client.on("user-unpublished", (user, mediaType) => updateMember(String(user.uid), mediaType === "audio" ? { audioMuted: true } : { videoMuted: true }));
       await client.join(appId, channelName, token, uid);
-      const microphone = await AgoraRTC.createMicrophoneAudioTrack();
+      const microphone = await AgoraRTC.createMicrophoneAudioTrack(selectedMicrophoneId ? { microphoneId: selectedMicrophoneId } : undefined);
       await client.publish(microphone);
       const recordingResponse = await fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
       const recordingResult = await recordingResponse.json().catch(() => ({})) as { status?: string; error?: string };
@@ -258,11 +281,13 @@ export function App() {
       microphoneTrackRef.current = microphone;
       setRoomMembers([{ id: uid, name: tokenDisplayName, audioMuted: false, videoMuted: true }]);
       setRoomMode("agora");
+      void refreshMediaDevices();
     } catch {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : true, video: false });
         localMediaRef.current = stream;
         setRoomMode("local");
+        void refreshMediaDevices();
         showToast("The calling service was unavailable; showing a local device preview.");
       } catch {
         setCameraOn(false);
@@ -311,6 +336,56 @@ export function App() {
     setMicOn(next);
   }
 
+  async function selectMicrophone(deviceId: string) {
+    if (!deviceId || deviceId === selectedMicrophoneId) return;
+    setSwitchingDevice("microphone");
+    try {
+      if (roomMode === "agora" && microphoneTrackRef.current) {
+        await microphoneTrackRef.current.setDevice(deviceId);
+      } else {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } }, video: false });
+        const nextTrack = stream.getAudioTracks()[0];
+        if (!nextTrack) throw new Error("No microphone track was returned");
+        nextTrack.enabled = micOn;
+        const localStream = localMediaRef.current ?? new MediaStream();
+        localStream.getAudioTracks().forEach((track) => { localStream.removeTrack(track); track.stop(); });
+        localStream.addTrack(nextTrack);
+        localMediaRef.current = localStream;
+      }
+      setSelectedMicrophoneId(deviceId);
+      showToast("Microphone switched");
+    } catch {
+      showToast("The microphone could not be switched");
+    } finally {
+      setSwitchingDevice(undefined);
+    }
+  }
+
+  async function selectCamera(deviceId: string) {
+    if (!deviceId || deviceId === selectedCameraId) return;
+    setSwitchingDevice("camera");
+    try {
+      if (roomMode === "agora" && cameraTrackRef.current) {
+        await cameraTrackRef.current.setDevice(deviceId);
+      } else if (roomMode === "local" && localMediaRef.current?.getVideoTracks().length) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { deviceId: { exact: deviceId } } });
+        const nextTrack = stream.getVideoTracks()[0];
+        if (!nextTrack) throw new Error("No camera track was returned");
+        nextTrack.enabled = cameraOn;
+        const localStream = localMediaRef.current;
+        localStream.getVideoTracks().forEach((track) => { localStream.removeTrack(track); track.stop(); });
+        localStream.addTrack(nextTrack);
+        if (videoRef.current) videoRef.current.srcObject = localStream;
+      }
+      setSelectedCameraId(deviceId);
+      showToast(cameraOn ? "Camera switched" : "Camera selected");
+    } catch {
+      showToast("The camera could not be switched");
+    } finally {
+      setSwitchingDevice(undefined);
+    }
+  }
+
   async function toggleCamera() {
     const next = !cameraOn;
     if (roomMode === "agora" && agoraClientRef.current) {
@@ -318,7 +393,7 @@ export function App() {
         if (screenSharing) await stopScreenShare(false);
         try {
           const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
-          const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1" });
+          const camera = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "720p_1", ...(selectedCameraId ? { cameraId: selectedCameraId } : {}) });
           cameraTrackRef.current = camera;
           flushSync(() => setCameraOn(true));
           if (!agoraVideoRef.current) throw new Error("Local camera container was not mounted");
@@ -340,7 +415,7 @@ export function App() {
       setRoomMembers((current) => current.map((member) => member.id === roomUidRef.current ? { ...member, videoMuted: true } : member));
     } else {
       if (next && !localMediaRef.current?.getVideoTracks().length) {
-        const camera = await navigator.mediaDevices.getUserMedia({ video: true });
+        const camera = await navigator.mediaDevices.getUserMedia({ video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true });
         const stream = localMediaRef.current ?? new MediaStream();
         camera.getVideoTracks().forEach((track) => stream.addTrack(track));
         localMediaRef.current = stream;
@@ -485,8 +560,14 @@ export function App() {
       </div>;
     })()}
     <div className="call-controls">
-      <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()}>{micOn ? <Mic /> : <MicOff />}</button>
-      <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()}>{cameraOn ? <Video /> : <VideoOff />}</button>
+      <div className="device-control">
+        <button className={!micOn ? "control-off" : ""} onClick={() => void toggleMicrophone()} title={micOn ? "Mute microphone" : "Unmute microphone"}>{micOn ? <Mic /> : <MicOff />}</button>
+        <label><span>Microphone</span><select aria-label="Microphone" value={selectedMicrophoneId} disabled={!microphones.length || switchingDevice === "microphone"} onChange={(event) => void selectMicrophone(event.target.value)}>{microphones.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>)}</select></label>
+      </div>
+      <div className="device-control">
+        <button className={!cameraOn ? "control-off" : ""} onClick={() => void toggleCamera()} title={cameraOn ? "Turn camera off" : "Turn camera on"}>{cameraOn ? <Video /> : <VideoOff />}</button>
+        <label><span>Camera</span><select aria-label="Camera" value={selectedCameraId} disabled={!cameras.length || switchingDevice === "camera"} onChange={(event) => void selectCamera(event.target.value)}>{cameras.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${index + 1}`}</option>)}</select></label>
+      </div>
       <button className={screenSharing ? "sharing" : ""} onClick={() => void toggleScreenShare()} title={screenSharing ? "Stop sharing" : "Share screen"}><MonitorUp /></button>
       <button className="hangup" onClick={leaveRoom}><PhoneOff /></button>
     </div>
