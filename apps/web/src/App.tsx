@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Trash2, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Trash2, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
@@ -47,6 +47,7 @@ export function App() {
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [authError, setAuthError] = useState<string>();
+  const [loggingOut, setLoggingOut] = useState(false);
   const [addingPerson, setAddingPerson] = useState(false);
   const [newPerson, setNewPerson] = useState({ email: "", title: "" });
   const [inviteUrl, setInviteUrl] = useState<string>();
@@ -173,6 +174,28 @@ export function App() {
     const response = await fetch(`${apiUrl}/api/auth/${setup ? "setup" : "login"}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password, displayName }) });
     if (!response.ok) { const body = await response.json().catch(() => ({})); setAuthError(body.error ?? "Unable to sign in"); return; }
     await refreshSession();
+  }
+
+  async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/logout`, { method: "POST", credentials: "include" });
+      if (!response.ok) throw new Error("Unable to log out");
+      setAuth((current) => current ? { ...current, user: null } : current);
+      setPeople([]);
+      setMeetings([]);
+      setRequests([]);
+      setMyActionItems([]);
+      knownRequestStatesRef.current.clear();
+      setPassword("");
+      setAuthError(undefined);
+      setView("office");
+    } catch {
+      showToast("Unable to log out. Please try again.");
+    } finally {
+      setLoggingOut(false);
+    }
   }
 
   async function invite(person: Person) {
@@ -631,7 +654,7 @@ export function App() {
         <button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}><History size={18} /> Meeting notes</button>
         <button className={view === "actions" ? "active" : ""} onClick={() => setView("actions")}><ListChecks size={18} /> My action items {myActionItems.filter((item) => item.status !== "complete").length > 0 && <span className="badge">{myActionItems.filter((item) => item.status !== "complete").length}</span>}</button>
       </nav>
-      <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div></div>
+      <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div className="profile-copy"><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div><button type="button" className="logout-button" onClick={() => void logout()} disabled={loggingOut} title="Log out" aria-label="Log out"><LogOut size={17} /></button></div>
     </aside>
 
     <main>
