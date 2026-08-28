@@ -6,28 +6,41 @@ import Fastify from "fastify";
 import AgoraToken from "agora-token";
 import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
-import type { MeetingRequest, MeetingSummary, Person } from "@office/contracts";
+import type { ActionItem, MeetingRequest, MeetingSummary, Person } from "@office/contracts";
 import { createSession, currentUser, destroySession, hashPassword, verifyPassword } from "./auth.js";
 import { createDatabase, migrate } from "./database.js";
 
 const people: Person[] = [
-  { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available" },
-  { id: "jon", name: "Jon Bell", initials: "JB", title: "Engineering", presence: "busy" },
+  { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available", isAdmin: true },
+  { id: "jon", name: "Jon Bell", initials: "JB", title: "Engineering", presence: "busy", location: { kind: "common_room", officeOwnerId: null, label: "Common Room", occupants: ["Jon Bell"] } },
   { id: "priya", name: "Priya Shah", initials: "PS", title: "Design", presence: "available" },
   { id: "theo", name: "Theo Martin", initials: "TM", title: "Operations", presence: "offline" }
 ];
 
+const demoActionItems: ActionItem[] = [{
+  id: "onboarding-launch-checklist",
+  meetingId: "weekly-product",
+  meetingTitle: "Weekly product sync",
+  meetingOccurredAt: "2026-08-26T15:00:00.000Z",
+  description: "Finalize the onboarding launch checklist",
+  assigneeId: "maya",
+  assigneeName: "Maya Chen",
+  dueAt: "2026-09-01T16:00:00.000Z",
+  confidence: 0.94,
+  status: "accepted"
+}];
+
 const meetings: MeetingSummary[] = [{
   id: "weekly-product",
   title: "Weekly product sync",
-  occurredAt: new Date(Date.now() - 86_400_000).toISOString(),
+  occurredAt: "2026-08-26T15:00:00.000Z",
   durationMinutes: 34,
   participants: people.slice(0, 3),
   summary: "The team aligned on the onboarding release and resolved the remaining copy review.",
   processingStatus: "analyzed",
   processingError: null,
-  actionItemCount: 0,
-  actionItems: []
+  actionItemCount: demoActionItems.length,
+  actionItems: demoActionItems
 }];
 
 const requests: MeetingRequest[] = [];
@@ -214,7 +227,7 @@ export async function buildApp() {
     return reply.code(204).send();
   });
   app.get("/api/action-items/mine", async (request, reply) => {
-    if (!database) return { actionItems: [] };
+    if (!database) return { actionItems: demoActionItems };
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     const result = await database.query(`SELECT a.id,a.meeting_id,a.description,a.assignee_id,a.due_at,a.confidence::float,a.status,u.display_name assignee_name,m.started_at,m.title

@@ -5,6 +5,7 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev -w @office/web\" \"npm run dev -w @office/api\"",
+    "screenshot:readme": "node scripts/capture-readme-screenshot.mjs",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "playwright": "^1.62.1",
     "typescript": "^5.9.2"
   },
   "engines": { "node": ">=22" }
