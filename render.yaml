@@ -5,9 +5,15 @@ services:
     buildCommand: npm ci --include=dev && npm run build -w @office/web
     staticPublishPath: apps/web/dist
     envVars:
+      # Left empty on purpose: the browser calls /api on this site and the rewrite below
+      # proxies to the API, which keeps the session cookie first-party.
       - key: VITE_API_URL
-        sync: false
+        value: ""
     routes:
+      # Update the destination host if Render assigned the API service a different hostname.
+      - type: rewrite
+        source: /api/*
+        destination: https://common-room-api.onrender.com/api/*
       - type: rewrite
         source: /*
         destination: /index.html

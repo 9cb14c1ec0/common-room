@@ -24,12 +24,21 @@ export async function verifyPassword(password: string, encoded: string) {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
+// The web app reaches the API under its own origin (Vite proxies /api in development, the Render
+// static site rewrites it in production), so the session cookie is first-party and SameSite=Lax.
+// Set CROSS_SITE_COOKIES=true when the browser calls the API host directly instead: that needs
+// SameSite=None plus Partitioned (CHIPS), or browsers blocking third-party cookies reject it.
+export const sessionCookieOptions = () => {
+  const production = process.env.NODE_ENV === "production";
+  const crossSite = process.env.CROSS_SITE_COOKIES === "true";
+  return { httpOnly: true, path: "/", secure: production || crossSite, sameSite: crossSite ? "none" : "lax", partitioned: crossSite } as const;
+};
+
 export async function createSession(database: Database, userId: string, reply: FastifyReply) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + 14 * 86_400_000);
   await database.query("INSERT INTO sessions(id_hash, user_id, expires_at) VALUES ($1, $2, $3)", [digest(token), userId, expiresAt]);
-  const production = process.env.NODE_ENV === "production";
-  reply.setCookie(COOKIE, token, { httpOnly: true, secure: production, sameSite: production ? "none" : "lax", path: "/", expires: expiresAt });
+  reply.setCookie(COOKIE, token, { ...sessionCookieOptions(), expires: expiresAt });
 }
 
 export async function currentUser(database: Database, request: FastifyRequest): Promise<AuthUser | undefined> {
@@ -43,5 +52,5 @@ export async function currentUser(database: Database, request: FastifyRequest): 
 export async function destroySession(database: Database, request: FastifyRequest, reply: FastifyReply) {
   const token = request.cookies[COOKIE];
   if (token) await database.query("DELETE FROM sessions WHERE id_hash=$1", [digest(token)]);
-  reply.clearCookie(COOKIE, { path: "/" });
+  reply.clearCookie(COOKIE, sessionCookieOptions());
 }
