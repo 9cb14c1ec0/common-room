@@ -29,6 +29,17 @@ test("door and meeting presence changes are reflected in the directory", async (
   await app.close();
 });
 
+test("demo mode includes representative meeting and action-item data", async () => {
+  const app = await buildApp();
+  const [meetings, actionItems] = await Promise.all([
+    app.inject({ method: "GET", url: "/api/meetings" }),
+    app.inject({ method: "GET", url: "/api/action-items/mine" })
+  ]);
+  assert.equal(meetings.json().meetings[0].actionItemCount, 1);
+  assert.equal(actionItems.json().actionItems[0].meetingTitle, "Weekly product sync");
+  await app.close();
+});
+
 test("an administrator can delete a meeting note", async () => {
   const app = await buildApp();
   const deletion = await app.inject({ method: "DELETE", url: "/api/meetings/weekly-product" });

@@ -2,6 +2,8 @@
 
 Common Room is a private virtual-office and conferencing application for teams. Each user has an office with an open or closed door, teammates can knock to request a private conversation, and everyone can join the shared Common Room. Calls are audio-first with optional camera and screen sharing.
 
+![Common Room office view with demo data](docs/common-room.png)
+
 Public Common Room sessions are recorded, transcribed, summarized, and made searchable across the company. Their action items are assigned to individual users. Private office meetings and their notes remain visible only to their participants.
 
 ## Features
@@ -199,6 +201,17 @@ npm run typecheck    # type-check all workspaces
 npm test             # run tests
 npm run dist:desktop # package desktop installers for the current OS
 ```
+
+### Refresh the README screenshot
+
+The screenshot uses the API's built-in demo data and isolated local ports, so it does not read or modify your development database.
+
+```bash
+npx playwright install chromium # first run only
+npm run screenshot:readme
+```
+
+The command starts temporary API and web processes, captures a 1440 × 1000 browser view, and replaces `docs/common-room.png`.
 
 ## Operational notes
 
