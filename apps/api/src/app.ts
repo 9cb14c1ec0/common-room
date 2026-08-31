@@ -9,6 +9,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { ActionItem, MeetingRequest, MeetingSummary, Person } from "@office/contracts";
 import { createSession, currentUser, destroySession, hashPassword, verifyPassword } from "./auth.js";
 import { createDatabase, migrate } from "./database.js";
+import { KEY_TERM_MAX_COUNT, keyTermProblem, normalizeKeyTerms } from "./keyTerms.js";
 
 const people: Person[] = [
   { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available", isAdmin: true },
@@ -61,7 +62,7 @@ export async function buildApp() {
   await app.register(cors, {
     origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, ""),
     credentials: true,
-    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"]
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
   });
   await app.register(websocket);
 
@@ -173,6 +174,33 @@ export async function buildApp() {
     await database.query("INSERT INTO invitations(email,title,token_hash,created_by,expires_at) VALUES($1,$2,$3,$4,$5)", [input.email.toLowerCase(), input.title, tokenHash(token), user.id, expiresAt]);
     const webOrigin = (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, "");
     return reply.code(201).send({ inviteUrl: `${webOrigin}/?invite=${encodeURIComponent(token)}`, expiresAt });
+  });
+
+  app.get("/api/settings/key-terms", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    const result = await database.query("SELECT term FROM transcription_key_terms ORDER BY lower(term)");
+    return { terms: result.rows.map((row) => row.term as string) };
+  });
+
+  app.put("/api/settings/key-terms", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    const input = z.object({ terms: z.array(z.string()).max(2000) }).parse(request.body);
+    const { terms, rejected, overflow } = normalizeKeyTerms(input.terms);
+    if (rejected.length) return reply.code(400).send({ error: `“${rejected[0]}” ${keyTermProblem(rejected[0])}` });
+    if (overflow) return reply.code(400).send({ error: `Key terms are limited to ${KEY_TERM_MAX_COUNT} entries` });
+    const client = await database.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM transcription_key_terms");
+      if (terms.length) await client.query("INSERT INTO transcription_key_terms(term,created_by) SELECT unnest($1::text[]),$2", [terms, user.id]);
+      await client.query("COMMIT");
+      return { terms };
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
   });
 
   app.get<{ Params: { token: string } }>("/api/invitations/:token", async (request, reply) => {
