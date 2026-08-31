@@ -36,6 +36,7 @@ export function App() {
   const localMediaRef = useRef<MediaStream | null>(null);
   const agoraClientRef = useRef<IAgoraRTCClient | null>(null);
   const roomUidRef = useRef<string | null>(null);
+  const roomConnectionAttemptRef = useRef(0);
   const microphoneTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const cameraTrackRef = useRef<ICameraVideoTrack | null>(null);
   const screenTrackRef = useRef<ILocalVideoTrack | null>(null);
@@ -289,41 +290,79 @@ export function App() {
   }
 
   async function enterRoom(roomId = "main", title?: string) {
+    const connectionAttempt = ++roomConnectionAttemptRef.current;
+    const isCurrentConnection = () => roomConnectionAttemptRef.current === connectionAttempt;
     setMeetingId(roomId);
     setView("room");
     setRoomMode("loading");
+    setRoomMembers([]);
+    setSpeakingMemberIds([]);
     void fetch(`${apiUrl}/api/presence`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "busy" }) });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
+    let client: IAgoraRTCClient | null = null;
+    let microphone: IMicrophoneAudioTrack | null = null;
+    const disposeConnection = async () => {
+      if (microphone) { microphone.stop(); microphone.close(); }
+      if (client) await client.leave().catch(() => undefined);
+      if (agoraClientRef.current === client) agoraClientRef.current = null;
+      if (microphoneTrackRef.current === microphone) microphoneTrackRef.current = null;
+    };
     try {
       const response = await fetch(`${apiUrl}/api/meetings/${roomId}/token`, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName: auth?.user?.displayName, title: title?.trim() || undefined }) });
       if (!response.ok) throw new Error("Agora token unavailable");
       const { appId, token, channelName, uid, meetingId: trackedMeetingId, meetingTitle: trackedMeetingTitle, displayName: tokenDisplayName } = await response.json() as { appId: string; token: string; channelName: string; uid: string; meetingId: string; meetingTitle: string; displayName: string };
+      if (!isCurrentConnection()) return;
       setMeetingId(trackedMeetingId);
       setMeetingTitle(trackedMeetingTitle);
       setNewMeetingTitle("");
       const { default: AgoraRTC } = await import("agora-rtc-sdk-ng");
-      const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      if (!isCurrentConnection()) return;
+      client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      agoraClientRef.current = client;
+      roomUidRef.current = uid;
       const memberName = (id: string) => people.find((person) => person.id === id)?.name ?? "Participant";
+      const isVisibleMember = (id: string) => !id.startsWith("recorder-");
       const updateMember = (id: string, changes: Partial<RoomMember>) => setRoomMembers((current) => {
+        if (!isCurrentConnection() || !isVisibleMember(id)) return current;
         const existing = current.find((member) => member.id === id);
         return [...current.filter((member) => member.id !== id), { id, name: existing?.name ?? memberName(id), audioMuted: existing?.audioMuted ?? true, videoMuted: existing?.videoMuted ?? true, ...changes }];
       });
+      const reconcileMembers = () => setRoomMembers((current) => {
+        if (!isCurrentConnection() || !client) return current;
+        const existing = new Map(current.map((member) => [member.id, member]));
+        const local = existing.get(uid) ?? { id: uid, name: tokenDisplayName, audioMuted: !micOn, videoMuted: true };
+        const remote = client.remoteUsers
+          .filter((user) => isVisibleMember(String(user.uid)))
+          .map((user) => {
+            const id = String(user.uid);
+            const previous = existing.get(id);
+            return { id, name: previous?.name ?? memberName(id), audioMuted: !user.hasAudio, videoMuted: !user.hasVideo };
+          });
+        return [local, ...remote];
+      });
+      setRoomMembers([{ id: uid, name: tokenDisplayName, audioMuted: !micOn, videoMuted: true }]);
       client.on("user-joined", (user) => updateMember(String(user.uid), {}));
       client.on("user-left", (user) => {
+        if (!isCurrentConnection()) return;
         const id = String(user.uid);
         setRoomMembers((current) => current.filter((member) => member.id !== id));
         setSpeakingMemberIds((current) => current.filter((memberId) => memberId !== id));
       });
       client.on("user-published", async (user, mediaType) => {
-        await client.subscribe(user, mediaType);
         const id = String(user.uid);
-        if (mediaType === "audio") { user.audioTrack?.play(); updateMember(id, { audioMuted: false }); }
-        if (mediaType === "video") {
-          updateMember(id, { videoMuted: false });
-          for (let attempt = 0; attempt < 20 && !document.getElementById(`remote-video-${id}`); attempt += 1) await new Promise((resolve) => window.setTimeout(resolve, 50));
-          const target = document.getElementById(`remote-video-${id}`);
-          if (target) user.videoTrack?.play(target, { fit: "contain", mirror: false });
-        }
+        if (!isVisibleMember(id)) return;
+        updateMember(id, {});
+        try {
+          await client?.subscribe(user, mediaType);
+          if (!isCurrentConnection()) return;
+          if (mediaType === "audio") { user.audioTrack?.play(); updateMember(id, { audioMuted: false }); }
+          if (mediaType === "video") {
+            updateMember(id, { videoMuted: false });
+            for (let attempt = 0; attempt < 20 && !document.getElementById(`remote-video-${id}`); attempt += 1) await new Promise((resolve) => window.setTimeout(resolve, 50));
+            const target = document.getElementById(`remote-video-${id}`);
+            if (target && isCurrentConnection()) user.videoTrack?.play(target, { fit: "contain", mirror: false });
+          }
+        } catch (error) { console.error(`Unable to subscribe to ${mediaType} from room participant`, error); }
       });
       client.on("user-unpublished", (user, mediaType) => {
         const id = String(user.uid);
@@ -332,28 +371,41 @@ export function App() {
       });
       client.enableAudioVolumeIndicator();
       client.on("volume-indicator", (volumes) => {
+        if (!isCurrentConnection()) return;
         setSpeakingMemberIds(volumes.filter(({ level }) => level > 5).map(({ uid: memberUid }) => String(memberUid)));
       });
+      client.on("connection-state-change", (state) => { if (state === "CONNECTED") reconcileMembers(); });
       await client.join(appId, channelName, token, uid);
-      const microphone = await AgoraRTC.createMicrophoneAudioTrack(selectedMicrophoneId ? { microphoneId: selectedMicrophoneId } : undefined);
-      await client.publish(microphone);
-      const recordingResponse = await fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
-      const recordingResult = await recordingResponse.json().catch(() => ({})) as { status?: string; error?: string };
-      if (!recordingResponse.ok || recordingResult.status === "failed" || recordingResult.status === "unavailable") showToast(recordingResult.error ?? "Automatic recording could not start.");
-      agoraClientRef.current = client;
-      roomUidRef.current = uid;
+      if (!isCurrentConnection()) { await disposeConnection(); return; }
+      reconcileMembers();
+      microphone = await AgoraRTC.createMicrophoneAudioTrack(selectedMicrophoneId ? { microphoneId: selectedMicrophoneId } : undefined);
+      if (!isCurrentConnection()) { await disposeConnection(); return; }
       microphoneTrackRef.current = microphone;
-      setRoomMembers([{ id: uid, name: tokenDisplayName, audioMuted: false, videoMuted: true }]);
+      await client.publish(microphone);
+      if (!isCurrentConnection()) { await disposeConnection(); return; }
+      updateMember(uid, { name: tokenDisplayName, audioMuted: false, videoMuted: true });
+      reconcileMembers();
       setRoomMode("agora");
       void refreshMediaDevices();
-    } catch {
+      try {
+        const recordingResponse = await fetch(`${apiUrl}/api/meetings/${trackedMeetingId}/recording/start`, { method: "POST", credentials: "include" });
+        const recordingResult = await recordingResponse.json().catch(() => ({})) as { status?: string; error?: string };
+        if (isCurrentConnection() && (!recordingResponse.ok || recordingResult.status === "failed" || recordingResult.status === "unavailable")) showToast(recordingResult.error ?? "Automatic recording could not start.");
+      } catch { if (isCurrentConnection()) showToast("Automatic recording could not start."); }
+    } catch (error) {
+      await disposeConnection();
+      if (!isCurrentConnection()) return;
+      roomUidRef.current = null;
+      console.error("Unable to join Agora room", error);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : true, video: false });
+        if (!isCurrentConnection()) { stream.getTracks().forEach((track) => track.stop()); return; }
         localMediaRef.current = stream;
         setRoomMode("local");
         void refreshMediaDevices();
         showToast("The calling service was unavailable; showing a local device preview.");
       } catch {
+        if (!isCurrentConnection()) return;
         setCameraOn(false);
         setMicOn(false);
         setRoomMode("local");
@@ -363,6 +415,7 @@ export function App() {
   }
 
   function leaveRoom() {
+    roomConnectionAttemptRef.current += 1;
     const leavingMeetingId = meetingId;
     const client = agoraClientRef.current;
     const tracks = [microphoneTrackRef.current, cameraTrackRef.current, screenTrackRef.current].filter((track): track is IMicrophoneAudioTrack | ILocalVideoTrack => Boolean(track));
