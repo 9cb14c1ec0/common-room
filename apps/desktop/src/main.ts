@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent, emptyWorkspaceState, isSameOrigin, type WorkspaceState } from "./workspace.js";
-import { canShareDisplay, selectDisplaySource } from "./screenShare.js";
+import { canAccessWorkspace, canShareDisplay, displayMediaHandlerOptions, selectDisplaySource } from "./screenShare.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const preloadPath = path.join(root, "preload.cjs");
@@ -215,9 +215,13 @@ function registerIpc() {
 
 function registerPermissions() {
   const allowed = new Set(["media", "mediaKeySystem", "display-capture", "notifications", "clipboard-sanitized-write"]);
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
-    const workspace = loadState().url;
-    callback(Boolean(workspace && allowed.has(permission) && isSameOrigin(contents.getURL(), workspace)));
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
+    return allowed.has(permission) && canAccessWorkspace(requestingOrigin, loadState().url);
+  });
+
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const requestingUrl = details.requestingUrl || contents.getURL();
+    callback(allowed.has(permission) && canAccessWorkspace(requestingUrl, loadState().url));
   });
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -234,7 +238,7 @@ function registerPermissions() {
       console.error("Unable to select a screen-sharing source", error);
       callback({});
     }
-  }, { useSystemPicker: true });
+  }, displayMediaHandlerOptions(process.platform));
 }
 
 const gotLock = app.requestSingleInstanceLock();
