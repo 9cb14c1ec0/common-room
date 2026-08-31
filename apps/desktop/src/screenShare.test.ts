@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canAccessWorkspace, canShareDisplay, displayMediaHandlerOptions, selectDisplaySource } from "./screenShare.js";
+import { canAccessWorkspace, canShareDisplay, displayMediaHandlerOptions, selectDisplaySource, serializeDisplaySources } from "./screenShare.js";
 
 test("canAccessWorkspace only permits the configured workspace origin", () => {
   assert.equal(canAccessWorkspace("https://office.example/meeting", "https://office.example/team"), true);
@@ -16,14 +16,23 @@ test("canShareDisplay only permits video capture from the workspace", () => {
   assert.equal(canShareDisplay(request, null), false);
 });
 
-test("selectDisplaySource prefers the primary display and falls back to the first source", () => {
+test("serializeDisplaySources exposes safe picker data", () => {
   const sources = [
-    { id: "screen:1", display_id: "8" },
-    { id: "screen:2", display_id: "12" }
+    { id: "screen:1:0", name: "Screen 1", thumbnail: { toDataURL: () => "data:image/png;base64,screen" } },
+    { id: "window:2:0", name: "Notes", thumbnail: { toDataURL: () => "data:image/png;base64,window" } }
   ];
-  assert.equal(selectDisplaySource(sources, 12)?.id, "screen:2");
-  assert.equal(selectDisplaySource(sources, 99)?.id, "screen:1");
-  assert.equal(selectDisplaySource([], 12), undefined);
+  assert.deepEqual(serializeDisplaySources(sources), [
+    { index: 0, name: "Screen 1", thumbnail: "data:image/png;base64,screen", type: "screen" },
+    { index: 1, name: "Notes", thumbnail: "data:image/png;base64,window", type: "window" }
+  ]);
+});
+
+test("selectDisplaySource accepts only an in-range integer index", () => {
+  const sources = [{ id: "screen:1" }, { id: "window:2" }];
+  assert.equal(selectDisplaySource(sources, 1)?.id, "window:2");
+  assert.equal(selectDisplaySource(sources, -1), undefined);
+  assert.equal(selectDisplaySource(sources, 2), undefined);
+  assert.equal(selectDisplaySource(sources, "1"), undefined);
 });
 
 test("displayMediaHandlerOptions only enables Electron's system picker on macOS", () => {
