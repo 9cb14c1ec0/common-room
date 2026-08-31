@@ -135,7 +135,39 @@ async function stopEmptyRooms() {
   }
 }
 
-async function transcribeFile(recordingPath: string) {
+// Mirrors the normalizer in apps/api/src/keyTerms.ts. The worker cannot import it: @office/contracts
+// ships raw TypeScript, and the worker compiles with tsc and runs the emitted JavaScript.
+const KEY_TERM_MAX_COUNT = 1000;
+const KEY_TERM_MAX_LENGTH = 50;
+const KEY_TERM_MAX_WORDS = 5;
+
+function usableKeyTerms(candidates: string[]): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const term = candidate.trim();
+    if (!term || term.length > KEY_TERM_MAX_LENGTH || term.split(/\s+/).length > KEY_TERM_MAX_WORDS || /[<>{}[\]\\]/.test(term)) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+    if (terms.length === KEY_TERM_MAX_COUNT) break;
+  }
+  return terms;
+}
+
+// Admin-curated vocabulary plus the display names of everyone in the meeting, so ElevenLabs spells
+// product names, jargon, and teammates correctly.
+async function keyTermsForMeeting(meetingId: string): Promise<string[]> {
+  if (!pool) return [];
+  const [configured, participants] = await Promise.all([
+    pool.query("SELECT term FROM transcription_key_terms ORDER BY lower(term)"),
+    pool.query("SELECT DISTINCT u.display_name FROM meeting_participants p JOIN users u ON u.id=p.user_id WHERE p.meeting_id=$1", [meetingId])
+  ]);
+  return usableKeyTerms([...configured.rows.map((row) => row.term as string), ...participants.rows.map((row) => row.display_name as string)]);
+}
+
+async function transcribeFile(recordingPath: string, keyterms: string[]) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
   const bytes = await readFile(recordingPath);
@@ -146,6 +178,9 @@ async function transcribeFile(recordingPath: string) {
   form.append("model_id", "scribe_v2");
   form.append("diarize", "true");
   form.append("tag_audio_events", "false");
+  // Repeated fields, one per term: that is how ElevenLabs encodes the list. Appending none keeps the
+  // request on base pricing, since key term prompting adds a 20% surcharge.
+  for (const term of keyterms) form.append("keyterms", term);
   const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text", { method: "POST", headers: { "xi-api-key": apiKey }, body: form });
   const transcript = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`ElevenLabs transcription failed (${response.status}): ${JSON.stringify(transcript)}`);
@@ -160,13 +195,14 @@ async function processNextTranscript() {
     const claimed = await pool.query("UPDATE meetings SET recording_status='transcribing',processing_error=NULL WHERE id=(SELECT id FROM meetings WHERE recording_status='recorded' AND transcript IS NULL AND coalesce(next_processing_at,now())<=now() ORDER BY ended_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,recording_url,transcription_attempts");
     meeting = claimed.rows[0];
     if (!meeting) return;
-    const transcript = await transcribeFile(meeting.recording_url);
+    const keyterms = await keyTermsForMeeting(meeting.id);
+    const transcript = await transcribeFile(meeting.recording_url, keyterms);
     const text = transcriptText(transcript);
     if (!text) throw new Error("ElevenLabs returned a successful response but no transcript text; the recording was retained for retry");
     await pool.query("UPDATE meetings SET transcript=$1,recording_status='transcribed',processing_error=NULL WHERE id=$2", [JSON.stringify(transcript), meeting.id]);
     await rm(meeting.recording_url, { force: true });
     await rm(path.join(recordingRoot, `${meeting.id}.json`), { force: true });
-    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting transcribed and recording deleted", meetingId: meeting.id, transcriptCharacters: text.length, transcriptWords: text.split(/\s+/).length }));
+    console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting transcribed and recording deleted", meetingId: meeting.id, transcriptCharacters: text.length, transcriptWords: text.split(/\s+/).length, keyTermCount: keyterms.length }));
   } catch (error) {
     if (meeting) {
       const attempts = meeting.transcription_attempts + 1;

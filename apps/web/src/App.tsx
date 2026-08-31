@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Trash2, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Trash2, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
@@ -20,7 +20,7 @@ export function App() {
   const [sentTo, setSentTo] = useState<string>();
   const [doorOpen, setDoorOpen] = useState(true);
   const [doorSaving, setDoorSaving] = useState(false);
-  const [view, setView] = useState<"office" | "notes" | "actions" | "room">("office");
+  const [view, setView] = useState<"office" | "notes" | "actions" | "admin" | "room">("office");
   const [requests, setRequests] = useState<RequestView[]>([]);
   const [toast, setToast] = useState<string>();
   const [micOn, setMicOn] = useState(true);
@@ -52,6 +52,8 @@ export function App() {
   const [addingPerson, setAddingPerson] = useState(false);
   const [newPerson, setNewPerson] = useState({ email: "", title: "" });
   const [inviteUrl, setInviteUrl] = useState<string>();
+  const [keyTerms, setKeyTerms] = useState("");
+  const [savingKeyTerms, setSavingKeyTerms] = useState(false);
   const inviteToken = new URLSearchParams(window.location.search).get("invite");
   const [invitation, setInvitation] = useState<{ email: string; title: string }>();
   const [meetingId, setMeetingId] = useState("main");
@@ -113,6 +115,11 @@ export function App() {
   }, [noteSearch, view, auth?.user?.id]);
 
   useEffect(() => {
+    if (!auth?.user?.isAdmin || view !== "admin") return;
+    void loadKeyTerms();
+  }, [view, auth?.user?.id]);
+
+  useEffect(() => {
     if (view !== "room" || !navigator.mediaDevices?.enumerateDevices) return;
     const refresh = () => void refreshMediaDevices();
     refresh();
@@ -152,6 +159,23 @@ export function App() {
     if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
     if (requestsResponse.ok) setRequests((await requestsResponse.json()).requests);
     if (actionsResponse.ok) setMyActionItems((await actionsResponse.json()).actionItems);
+  }
+
+  async function loadKeyTerms() {
+    const response = await fetch(`${apiUrl}/api/settings/key-terms`, { credentials: "include" });
+    if (response.ok) setKeyTerms(((await response.json()).terms as string[]).join("\n"));
+  }
+
+  async function saveKeyTerms(event: React.FormEvent) {
+    event.preventDefault();
+    setSavingKeyTerms(true);
+    try {
+      const terms = keyTerms.split("\n").map((term) => term.trim()).filter(Boolean);
+      const response = await fetch(`${apiUrl}/api/settings/key-terms`, { method: "PUT", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ terms }) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to save key terms"); return; }
+      setKeyTerms(((await response.json()).terms as string[]).join("\n"));
+      showToast("Key terms saved");
+    } finally { setSavingKeyTerms(false); }
   }
 
   async function loadMeetingNotes(query: string) {
@@ -706,12 +730,13 @@ export function App() {
         <button className={view === "office" ? "active" : ""} onClick={() => setView("office")}><Users size={18} /> Office</button>
         <button className={view === "notes" ? "active" : ""} onClick={() => setView("notes")}><History size={18} /> Meeting notes</button>
         <button className={view === "actions" ? "active" : ""} onClick={() => setView("actions")}><ListChecks size={18} /> My action items {myActionItems.filter((item) => item.status !== "complete").length > 0 && <span className="badge">{myActionItems.filter((item) => item.status !== "complete").length}</span>}</button>
+        {auth.user.isAdmin && <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><Settings size={18} /> Admin</button>}
       </nav>
       <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div className="profile-copy"><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div><button type="button" className="logout-button" onClick={() => void logout()} disabled={loggingOut} title="Log out" aria-label="Log out"><LogOut size={17} /></button></div>
     </aside>
 
     <main>
-      {view !== "office" && <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "actions" ? "My action items" : "Meeting notes"}</h1></div><div className="header-actions">{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}</div></header>}
+      {view !== "office" && <header><div><p className="eyebrow">COMMON ROOM</p><h1>{view === "actions" ? "My action items" : view === "admin" ? "Admin" : "Meeting notes"}</h1></div><div className="header-actions">{view === "notes" ? <label className="note-search"><Search size={17} /><input value={noteSearch} onChange={(event) => setNoteSearch(event.target.value)} placeholder="Search notes and action items" aria-label="Search meeting notes" />{noteSearch && <button onClick={() => setNoteSearch("")} aria-label="Clear search"><X size={15} /></button>}</label> : null}{notificationPermission !== "granted" && <button className="notification-button" onClick={() => void enableNotifications()}><Bell size={16} /> Enable notifications</button>}</div></header>}
 
       {view === "office" && <><section className="room-grid"><section className={`hero ${doorOpen ? "" : "door-closed"}`}>
         <div><h2>My Office</h2><span className="room-label"><i className={`dot ${doorOpen ? "available" : "offline"}`} /> DOOR {doorOpen ? "OPEN" : "CLOSED"}</span></div>
@@ -733,6 +758,18 @@ export function App() {
       <section className="section-block office-actions"><div className="section-heading"><div><p className="eyebrow">YOUR WORK</p><h3>Current action items</h3></div><button className="text-button" onClick={() => setView("actions")}>View all <ArrowUpRight size={14} /></button></div>{myActionItems.filter((item) => item.status !== "complete").length ? <ul className="action-items task-list">{myActionItems.filter((item) => item.status !== "complete").map((item) => renderActionItem(item, true))}</ul> : <div className="compact-empty"><Check size={18} /> You’re all caught up.</div>}</section></>}
       {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><div className="note-title-actions"><span>{meeting.durationMinutes} min</span>{auth.user?.isAdmin && <button className="delete-note" disabled={deletingMeetingId === meeting.id} onClick={() => void deleteMeetingNote(meeting)} title={`Delete notes for ${meeting.title}`} aria-label={`Delete notes for ${meeting.title}`}><Trash2 size={15} /> {deletingMeetingId === meeting.id ? "Deleting…" : "Delete"}</button>}</div></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => renderActionItem(item))}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>{noteSearch ? "No matching meeting notes" : "No meeting notes yet"}</h3>{noteSearch && <p>Try a different word or phrase.</p>}</div>}</section>}
       {view === "actions" && <section className="panel-list"><p className="panel-intro">Accept proposed work, adjust its wording or due date, and mark it complete when you’re done.</p>{myActionItems.length ? <ul className="action-items task-list">{myActionItems.map((item) => renderActionItem(item, true))}</ul> : <div className="empty-state"><ListChecks size={28} /><h3>No action items assigned to you</h3><p>Accepted proposals and assigned next steps will appear here.</p></div>}</section>}
+      {view === "admin" && <section className="panel-list">
+        <p className="panel-intro">Key terms are sent to ElevenLabs with every recording so it spells your product names, jargon, and teammates correctly. Everyone in a meeting has their name added automatically — you only need to list the words it would not otherwise know.</p>
+        <form className="key-terms-form" onSubmit={(event) => void saveKeyTerms(event)}>
+          <label htmlFor="key-terms">One term per line, up to 50 characters and 5 words each.</label>
+          <textarea id="key-terms" value={keyTerms} onChange={(event) => setKeyTerms(event.target.value)} rows={14} spellCheck={false} placeholder={"Acme Onboarding\nKestrel"} />
+          <div className="key-terms-actions">
+            <span>{keyTerms.split("\n").filter((term) => term.trim()).length} / 1000 terms</span>
+            <button type="submit" disabled={savingKeyTerms}>{savingKeyTerms ? "Saving…" : "Save key terms"}</button>
+          </div>
+          <p className="key-terms-note">ElevenLabs charges 20% more for transcription while this list has any terms in it. Leave it empty and nothing extra is billed.</p>
+        </form>
+      </section>}
     </main>
     {(() => { const knock = requests.find((item) => item.direction === "incoming" && item.status === "pending"); return knock ? <div className="knock-backdrop"><section className="knock-dialog" role="dialog" aria-modal="true" aria-labelledby="knock-title"><div className="knock-icon"><DoorOpen size={24} /></div><p className="eyebrow">KNOCK AT THE DOOR</p><h3 id="knock-title">{knock.senderName} is at your door</h3><p>Would you like to let them into your office?</p><div><button className="secondary" onClick={() => void respondToRequest(knock, "declined")}>Not now</button><button className="primary" onClick={() => void respondToRequest(knock, "accepted")}><DoorOpen size={16} /> Let them in</button></div></section></div> : null; })()}
     {toast && <div className="toast"><Check size={17} /> {toast}</div>}

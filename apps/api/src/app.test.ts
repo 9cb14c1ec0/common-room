@@ -54,3 +54,23 @@ test("an administrator can delete a meeting note", async () => {
   assert.deepEqual(missing.json(), { error: "Meeting note not found" });
   await app.close();
 });
+
+test("key term settings are unavailable without a database", async () => {
+  const app = await buildApp();
+  const read = await app.inject({ method: "GET", url: "/api/settings/key-terms" });
+  assert.equal(read.statusCode, 400);
+  assert.deepEqual(read.json(), { error: "Database is not configured" });
+
+  const write = await app.inject({ method: "PUT", url: "/api/settings/key-terms", payload: { terms: ["Kestrel"] } });
+  assert.equal(write.statusCode, 400);
+  assert.deepEqual(write.json(), { error: "Database is not configured" });
+  await app.close();
+});
+
+test("CORS preflight permits the key term settings write", async () => {
+  const app = await buildApp();
+  const response = await app.inject({ method: "OPTIONS", url: "/api/settings/key-terms", headers: { origin: "http://localhost:5173", "access-control-request-method": "PUT" } });
+  assert.equal(response.statusCode, 204);
+  assert.match(response.headers["access-control-allow-methods"] ?? "", /PUT/);
+  await app.close();
+});
