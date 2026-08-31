@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:;" />
+    <title>Choose what to share</title>
+    <link rel="stylesheet" href="./screen-share-picker.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">SCREEN SHARING</p>
+        <h1>Choose what to share</h1>
+        <p class="description">Select a screen or window. Common Room will only share the item you choose.</p>
+      </header>
+
+      <section id="sources" class="source-grid" aria-label="Screens and windows" aria-busy="true"></section>
+      <p id="message" class="message">Finding screens and windows…</p>
+
+      <footer>
+        <button type="button" id="cancel" class="secondary">Cancel</button>
+        <button type="button" id="share" class="primary" disabled>Share</button>
+      </footer>
+    </main>
+    <script src="./screen-share-picker.js"></script>
+  </body>
+</html>

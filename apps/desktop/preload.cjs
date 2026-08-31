@@ -19,6 +19,14 @@ if (isLocalShell()) {
   });
 }
 
+if (isLocalShell() && location.pathname.endsWith("/screen-share-picker.html")) {
+  contextBridge.exposeInMainWorld("screenShare", {
+    getSources: () => ipcRenderer.invoke("screen-share:get-sources"),
+    choose: (index) => ipcRenderer.invoke("screen-share:choose", index),
+    cancel: () => ipcRenderer.invoke("screen-share:cancel")
+  });
+}
+
 contextBridge.exposeInMainWorld("commonRoomDesktop", {
   showNotification: (title, body) => ipcRenderer.invoke("notification:show", { title, body })
 });

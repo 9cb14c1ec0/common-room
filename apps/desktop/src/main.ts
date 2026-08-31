@@ -1,19 +1,25 @@
-import { app, BrowserWindow, Menu, Notification, desktopCapturer, shell, ipcMain, screen, session } from "electron";
+import { app, BrowserWindow, Menu, Notification, desktopCapturer, shell, ipcMain, session } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { normalizeWorkspaceUrl, parseWorkspaceState, probeWorkspace, rememberRecent, emptyWorkspaceState, isSameOrigin, type WorkspaceState } from "./workspace.js";
-import { canAccessWorkspace, canShareDisplay, displayMediaHandlerOptions, selectDisplaySource } from "./screenShare.js";
+import { canAccessWorkspace, canShareDisplay, displayMediaHandlerOptions, selectDisplaySource, serializeDisplaySources } from "./screenShare.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const preloadPath = path.join(root, "preload.cjs");
 const onboardingPath = path.join(root, "renderer", "onboarding.html");
 const loadErrorPath = path.join(root, "renderer", "load-error.html");
+const screenSharePickerPath = path.join(root, "renderer", "screen-share-picker.html");
 
 let mainWindow: BrowserWindow | undefined;
 let showingShellPage = false;
 let connectInFlight = false;
 const rendererDir = path.resolve(path.join(root, "renderer"));
+type ScreenSharePickerContext = {
+  sources: Electron.DesktopCapturerSource[];
+  finish: (source?: Electron.DesktopCapturerSource) => void;
+};
+const screenSharePickers = new Map<number, ScreenSharePickerContext>();
 
 function isLocalRendererUrl(url: string): boolean {
   try {
@@ -35,6 +41,13 @@ function assertTrustedWorkspace(event: Electron.IpcMainInvokeEvent) {
   const url = event.senderFrame?.url;
   const workspace = loadState().url;
   if (!url || !workspace || !isSameOrigin(url, workspace)) throw new Error("Notifications are only available to the connected workspace.");
+}
+
+function getScreenSharePicker(event: Electron.IpcMainInvokeEvent): ScreenSharePickerContext {
+  const context = screenSharePickers.get(event.sender.id);
+  const url = event.senderFrame?.url;
+  if (!context || !url || !isLocalRendererUrl(url)) throw new Error("Screen-share selection is only available from the source picker.");
+  return context;
 }
 
 function statePath() {
@@ -99,6 +112,52 @@ function attachNavigationGuards(window: BrowserWindow) {
   window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
     if (!isMainFrame || showingShellPage || errorCode === -3) return;
     void showLoadError(errorDescription);
+  });
+}
+
+function showScreenSharePicker(sources: Electron.DesktopCapturerSource[]): Promise<Electron.DesktopCapturerSource | undefined> {
+  return new Promise((resolve) => {
+    const picker = new BrowserWindow({
+      width: 900,
+      height: 650,
+      minWidth: 640,
+      minHeight: 480,
+      title: "Choose what to share",
+      backgroundColor: "#f4f5f1",
+      parent: mainWindow,
+      modal: Boolean(mainWindow),
+      show: false,
+      autoHideMenuBar: true,
+      webPreferences: {
+        preload: preloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: false
+      }
+    });
+
+    const pickerContentsId = picker.webContents.id;
+    let settled = false;
+    const finish = (source?: Electron.DesktopCapturerSource) => {
+      if (settled) return;
+      settled = true;
+      screenSharePickers.delete(pickerContentsId);
+      resolve(source);
+      if (!picker.isDestroyed()) picker.close();
+    };
+
+    screenSharePickers.set(pickerContentsId, { sources, finish });
+    picker.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    picker.webContents.on("will-navigate", (event, url) => {
+      if (url !== pathToFileURL(screenSharePickerPath).href) event.preventDefault();
+    });
+    picker.once("ready-to-show", () => picker.show());
+    picker.once("closed", () => finish());
+    void picker.loadFile(screenSharePickerPath).catch((error) => {
+      console.error("Unable to open the screen-sharing picker", error);
+      finish();
+    });
   });
 }
 
@@ -171,6 +230,18 @@ function buildMenu() {
 }
 
 function registerIpc() {
+  ipcMain.handle("screen-share:get-sources", (event) => {
+    return serializeDisplaySources(getScreenSharePicker(event).sources);
+  });
+  ipcMain.handle("screen-share:choose", (event, index: unknown) => {
+    const context = getScreenSharePicker(event);
+    const source = selectDisplaySource(context.sources, index);
+    if (!source) throw new Error("The selected screen-sharing source is no longer available.");
+    context.finish(source);
+  });
+  ipcMain.handle("screen-share:cancel", (event) => {
+    getScreenSharePicker(event).finish();
+  });
   ipcMain.handle("workspace:get", (event) => {
     assertTrustedShell(event);
     return loadState();
@@ -231,8 +302,11 @@ function registerPermissions() {
     }
 
     try {
-      const sources = await desktopCapturer.getSources({ types: ["screen"] });
-      const source = selectDisplaySource(sources, screen.getPrimaryDisplay().id);
+      const sources = await desktopCapturer.getSources({
+        types: ["screen", "window"],
+        thumbnailSize: { width: 320, height: 180 }
+      });
+      const source = await showScreenSharePicker(sources);
       callback(source ? { video: source } : {});
     } catch (error) {
       console.error("Unable to select a screen-sharing source", error);
