@@ -1,6 +1,6 @@
 {
   "name": "@office/desktop",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Desktop client for Common Room",
   "homepage": "https://github.com/9cb14c1ec0/common-room",
