@@ -749,26 +749,38 @@ export function App() {
         <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
           <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
           <div className="person-info"><strong>{person.name}</strong><small>{person.title}{person.isAdmin ? " · Administrator" : ""}</small>{person.location && <span className="person-location"><i className="dot busy" /> {person.location.label}{person.location.occupants.filter((name) => name !== person.name).length ? ` · with ${person.location.occupants.filter((name) => name !== person.name).join(", ")}` : ""}</span>}</div>
-          <div className="person-actions"><button disabled={(!requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") && person.presence !== "available") || person.id === auth.user?.id} onClick={() => { const knock = requests.find((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending"); if (knock) void respondToRequest(knock, "cancelled"); else void invite(person); }}>
+          <div className="person-actions"><button className="knock-button" disabled={(!requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") && person.presence !== "available") || person.id === auth.user?.id} onClick={() => { const knock = requests.find((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending"); if (knock) void respondToRequest(knock, "cancelled"); else void invite(person); }}>
             {requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") ? "Cancel knock" : sentTo === person.id ? "Knocking…" : person.presence === "available" ? "Knock on door" : person.presence === "busy" ? "In a meeting" : "Door closed"}
-          </button>{auth.user?.isAdmin && person.id !== auth.user?.id && <button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete</button>}</div>
+          </button></div>
         </article>)}</div>
       </section>
 
       <section className="section-block office-actions"><div className="section-heading"><div><p className="eyebrow">YOUR WORK</p><h3>Current action items</h3></div><button className="text-button" onClick={() => setView("actions")}>View all <ArrowUpRight size={14} /></button></div>{myActionItems.filter((item) => item.status !== "complete").length ? <ul className="action-items task-list">{myActionItems.filter((item) => item.status !== "complete").map((item) => renderActionItem(item, true))}</ul> : <div className="compact-empty"><Check size={18} /> You’re all caught up.</div>}</section></>}
       {view === "notes" && <section className="panel-list">{meetings.length ? meetings.map((meeting) => <article className="note-detail" key={meeting.id}><div className="note-title"><div><p className="eyebrow">{new Date(meeting.occurredAt).toLocaleDateString()}</p><h3>{meeting.title}</h3></div><div className="note-title-actions"><span>{meeting.durationMinutes} min</span>{auth.user?.isAdmin && <button className="delete-note" disabled={deletingMeetingId === meeting.id} onClick={() => void deleteMeetingNote(meeting)} title={`Delete notes for ${meeting.title}`} aria-label={`Delete notes for ${meeting.title}`}><Trash2 size={15} /> {deletingMeetingId === meeting.id ? "Deleting…" : "Delete"}</button>}</div></div><div className={`processing-status status-${meeting.processingStatus}`}>{({ not_started: "Not recorded", queued: "Waiting for recorder", starting: "Starting recorder", recording: "Recording", recorded: "Waiting for transcription", transcribing: "Transcribing", transcribed: "Waiting for AI analysis", summarizing: "Generating summary and action items", analyzed: "Notes ready", failed: "Processing failed" } as Record<string,string>)[meeting.processingStatus] ?? meeting.processingStatus}</div>{meeting.processingError ? <p className="processing-error">{meeting.processingError}</p> : null}<p className="meeting-summary">{meeting.summary}</p><div className="action-count"><Check size={16} /> {meeting.actionItemCount} action items</div>{meeting.actionItems?.length ? <ul className="action-items">{meeting.actionItems.map((item) => renderActionItem(item))}</ul> : null}</article>) : <div className="empty-state"><History size={28} /><h3>{noteSearch ? "No matching meeting notes" : "No meeting notes yet"}</h3>{noteSearch && <p>Try a different word or phrase.</p>}</div>}</section>}
       {view === "actions" && <section className="panel-list"><p className="panel-intro">Accept proposed work, adjust its wording or due date, and mark it complete when you’re done.</p>{myActionItems.length ? <ul className="action-items task-list">{myActionItems.map((item) => renderActionItem(item, true))}</ul> : <div className="empty-state"><ListChecks size={28} /><h3>No action items assigned to you</h3><p>Accepted proposals and assigned next steps will appear here.</p></div>}</section>}
-      {view === "admin" && <section className="panel-list">
-        <p className="panel-intro">Key terms are sent to ElevenLabs with every recording so it spells your product names, jargon, and teammates correctly. Everyone in a meeting has their name added automatically — you only need to list the words it would not otherwise know.</p>
-        <form className="key-terms-form" onSubmit={(event) => void saveKeyTerms(event)}>
-          <label htmlFor="key-terms">One term per line, up to 50 characters and 5 words each.</label>
-          <textarea id="key-terms" value={keyTerms} onChange={(event) => setKeyTerms(event.target.value)} rows={14} spellCheck={false} placeholder={"Acme Onboarding\nKestrel"} />
-          <div className="key-terms-actions">
-            <span>{keyTerms.split("\n").filter((term) => term.trim()).length} / 1000 terms</span>
-            <button type="submit" disabled={savingKeyTerms}>{savingKeyTerms ? "Saving…" : "Save key terms"}</button>
-          </div>
-          <p className="key-terms-note">ElevenLabs charges 20% more for transcription while this list has any terms in it. Leave it empty and nothing extra is billed.</p>
-        </form>
+      {view === "admin" && <section className="panel-list admin-panel">
+        <section className="admin-section">
+          <div className="admin-section-heading"><div><p className="eyebrow">ACCESS</p><h3>Team members</h3></div><span>{people.length} {people.length === 1 ? "member" : "members"}</span></div>
+          <p className="admin-section-description">Manage who can access this workspace. Deleting a user ends their active sessions while preserving existing meeting notes.</p>
+          <div className="admin-user-list">{people.map((person, index) => <div className="admin-user-row" key={person.id}>
+            <div className={`avatar tone-${index}`}>{person.initials}</div>
+            <div className="admin-user-copy"><strong>{person.name}{person.id === auth.user?.id ? " (you)" : ""}</strong><small>{person.title || "No description"}{person.isAdmin ? " · Administrator" : ""}</small></div>
+            {person.id !== auth.user?.id ? <button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete user</button> : <span className="current-user-label">Current user</span>}
+          </div>)}</div>
+        </section>
+        <section className="admin-section">
+          <div className="admin-section-heading"><div><p className="eyebrow">TRANSCRIPTION</p><h3>Key terms</h3></div></div>
+          <p className="admin-section-description">Key terms are sent to ElevenLabs with every recording so it spells your product names, jargon, and teammates correctly. Everyone in a meeting has their name added automatically — you only need to list the words it would not otherwise know.</p>
+          <form className="key-terms-form" onSubmit={(event) => void saveKeyTerms(event)}>
+            <label htmlFor="key-terms">One term per line, up to 50 characters and 5 words each.</label>
+            <textarea id="key-terms" value={keyTerms} onChange={(event) => setKeyTerms(event.target.value)} rows={14} spellCheck={false} placeholder={"Acme Onboarding\nKestrel"} />
+            <div className="key-terms-actions">
+              <span>{keyTerms.split("\n").filter((term) => term.trim()).length} / 1000 terms</span>
+              <button type="submit" disabled={savingKeyTerms}>{savingKeyTerms ? "Saving…" : "Save key terms"}</button>
+            </div>
+            <p className="key-terms-note">ElevenLabs charges 20% more for transcription while this list has any terms in it. Leave it empty and nothing extra is billed.</p>
+          </form>
+        </section>
       </section>}
     </main>
     {(() => { const knock = requests.find((item) => item.direction === "incoming" && item.status === "pending"); return knock ? <div className="knock-backdrop"><section className="knock-dialog" role="dialog" aria-modal="true" aria-labelledby="knock-title"><div className="knock-icon"><DoorOpen size={24} /></div><p className="eyebrow">KNOCK AT THE DOOR</p><h3 id="knock-title">{knock.senderName} is at your door</h3><p>Would you like to let them into your office?</p><div><button className="secondary" onClick={() => void respondToRequest(knock, "declined")}>Not now</button><button className="primary" onClick={() => void respondToRequest(knock, "accepted")}><DoorOpen size={16} /> Let them in</button></div></section></div> : null; })()}
