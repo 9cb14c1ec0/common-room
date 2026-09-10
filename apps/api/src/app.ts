@@ -68,13 +68,16 @@ export async function buildApp() {
   await app.register(websocket);
 
   // Mutations publish "changed" topics that connected websocket clients use to refetch.
-  // With a database the event goes through pg_notify so worker updates and other API
-  // instances reach every client; in demo mode everything happens in this process.
+  // Local clients are notified synchronously so delivery never depends on the LISTEN
+  // connection being up; with a database the event also goes through pg_notify (tagged
+  // with this instance's id so the loopback copy is dropped) to reach clients of other
+  // API instances, alongside events the worker publishes the same way.
   const hub = createEventHub();
-  const stopListening = process.env.DATABASE_URL && database ? listenForEvents(process.env.DATABASE_URL, hub.deliver) : undefined;
+  const instanceId = randomBytes(8).toString("hex");
+  const stopListening = process.env.DATABASE_URL && database ? listenForEvents(process.env.DATABASE_URL, instanceId, hub.deliver) : undefined;
   const publish = (topics: ChangedTopic[]) => {
-    if (database) void database.query("SELECT pg_notify($1,$2)", [EVENT_CHANNEL, topics.join(",")]).catch(() => undefined);
-    else hub.deliver(topics);
+    hub.deliver(topics);
+    if (database) void database.query("SELECT pg_notify($1,$2)", [EVENT_CHANNEL, `${instanceId}|${topics.join(",")}`]).catch(() => undefined);
   };
   // Pending knocks used to expire lazily inside GET /api/requests on every poll; with
   // clients idle on the websocket the server has to sweep on its own clock.
