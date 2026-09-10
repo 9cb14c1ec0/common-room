@@ -11,6 +11,9 @@ services:
         value: ""
     routes:
       # Update the destination host if Render assigned the API service a different hostname.
+      # Static-site rewrites do not proxy websocket upgrades, so /api/events cannot connect
+      # through this route and the web app falls back to polling. For live push updates set
+      # VITE_API_URL to the API host and CROSS_SITE_COOKIES=true on the API service instead.
       - type: rewrite
         source: /api/*
         destination: https://common-room-api.onrender.com/api/*

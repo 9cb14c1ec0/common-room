@@ -1,5 +1,12 @@
 export type Presence = "available" | "busy" | "do_not_disturb" | "offline";
 
+export type ChangedTopic = "people" | "requests" | "meetings" | "actionItems";
+
+export interface ChangedEvent {
+  type: "changed";
+  topics: ChangedTopic[];
+}
+
 export interface Person {
   id: string;
   name: string;

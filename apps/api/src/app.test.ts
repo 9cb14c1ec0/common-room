@@ -29,6 +29,17 @@ test("door and meeting presence changes are reflected in the directory", async (
   await app.close();
 });
 
+test("websocket clients are told when the directory changes", async () => {
+  const app = await buildApp();
+  await app.ready();
+  const socket = await app.injectWS("/api/events");
+  const message = new Promise((resolve) => socket.once("message", (data: Buffer) => resolve(JSON.parse(String(data)))));
+  await app.inject({ method: "PATCH", url: "/api/presence", payload: { status: "busy" } });
+  assert.deepEqual(await message, { type: "changed", topics: ["people"] });
+  socket.terminate();
+  await app.close();
+});
+
 test("demo mode includes representative meeting and action-item data", async () => {
   const app = await buildApp();
   const [meetings, actionItems] = await Promise.all([
