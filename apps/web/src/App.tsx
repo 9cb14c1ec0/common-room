@@ -89,29 +89,37 @@ export function App() {
     let socketOpen = false;
     let reconnectDelay = 1000;
     let reconnectTimer: number | undefined;
+    // Overlapping refreshes must not let a slow, older response overwrite a newer one:
+    // each call claims a generation per topic it fetches, and a result is applied only
+    // if no newer refresh has started fetching that topic since.
+    const refreshGenerations: Record<ChangedTopic, number> = { people: 0, requests: 0, meetings: 0, actionItems: 0 };
     const refreshRealtime = async (announce: boolean, topics?: ChangedTopic[]) => {
       const wants = (topic: ChangedTopic) => !topics || topics.includes(topic);
+      const generation = new Map((["people", "requests", "meetings", "actionItems"] as ChangedTopic[]).filter(wants).map((topic) => [topic, ++refreshGenerations[topic]]));
+      const current = (topic: ChangedTopic) => refreshGenerations[topic] === generation.get(topic);
       try {
         const options = { credentials: "include" as const };
         const [peopleResponse, requestsResponse, meetingsResponse, actionsResponse] = await Promise.all([
-          wants("people") ? fetch(`${apiUrl}/api/people`, options) : undefined,
-          wants("requests") ? fetch(`${apiUrl}/api/requests`, options) : undefined,
-          wants("meetings") ? fetch(`${apiUrl}/api/meetings${noteSearchRef.current ? `?q=${encodeURIComponent(noteSearchRef.current)}` : ""}`, options) : undefined,
-          wants("actionItems") ? fetch(`${apiUrl}/api/action-items/mine`, options) : undefined
+          generation.has("people") ? fetch(`${apiUrl}/api/people`, options) : undefined,
+          generation.has("requests") ? fetch(`${apiUrl}/api/requests`, options) : undefined,
+          generation.has("meetings") ? fetch(`${apiUrl}/api/meetings${noteSearchRef.current ? `?q=${encodeURIComponent(noteSearchRef.current)}` : ""}`, options) : undefined,
+          generation.has("actionItems") ? fetch(`${apiUrl}/api/action-items/mine`, options) : undefined
         ]);
         if (!active) return;
-        if (peopleResponse?.ok) setPeople((await peopleResponse.json()).people);
-        if (meetingsResponse?.ok) setMeetings((await meetingsResponse.json()).meetings);
-        if (actionsResponse?.ok) setMyActionItems((await actionsResponse.json()).actionItems);
+        if (peopleResponse?.ok) { const nextPeople = (await peopleResponse.json()).people; if (current("people")) setPeople(nextPeople); }
+        if (meetingsResponse?.ok) { const nextMeetings = (await meetingsResponse.json()).meetings; if (current("meetings")) setMeetings(nextMeetings); }
+        if (actionsResponse?.ok) { const nextActionItems = (await actionsResponse.json()).actionItems; if (current("actionItems")) setMyActionItems(nextActionItems); }
         if (requestsResponse?.ok) {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
-          if (announce) for (const item of nextRequests) {
-            const previous = knownRequestStatesRef.current.get(item.id);
-            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); void showSystemNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
-            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); void showSystemNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
+          if (current("requests")) {
+            if (announce) for (const item of nextRequests) {
+              const previous = knownRequestStatesRef.current.get(item.id);
+              if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); void showSystemNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
+              if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); void showSystemNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
+            }
+            knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
+            setRequests(nextRequests);
           }
-          knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
-          setRequests(nextRequests);
         }
       } catch { /* keep the current snapshot and retry */ }
     };
