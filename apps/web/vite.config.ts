@@ -7,7 +7,7 @@ export default defineConfig({
     port: Number(process.env.WEB_PORT ?? 5173),
     strictPort: Boolean(process.env.WEB_PORT),
     proxy: {
-      "/api": process.env.API_PROXY_TARGET ?? "http://localhost:4000",
+      "/api": { target: process.env.API_PROXY_TARGET ?? "http://localhost:4000", ws: true },
       "/health": process.env.API_PROXY_TARGET ?? "http://localhost:4000"
     }
   }

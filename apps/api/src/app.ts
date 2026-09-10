@@ -6,10 +6,11 @@ import Fastify from "fastify";
 import AgoraToken from "agora-token";
 import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
-import type { ActionItem, MeetingRequest, MeetingSummary, Person } from "@office/contracts";
+import type { ActionItem, ChangedTopic, MeetingRequest, MeetingSummary, Person } from "@office/contracts";
 import { createSession, currentUser, destroySession, hashPassword, verifyPassword } from "./auth.js";
 import { createDatabase, migrate } from "./database.js";
 import { KEY_TERM_MAX_COUNT, keyTermProblem, normalizeKeyTerms } from "./keyTerms.js";
+import { createEventHub, listenForEvents, EVENT_CHANNEL } from "./events.js";
 
 const people: Person[] = [
   { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available", isAdmin: true },
@@ -66,7 +67,31 @@ export async function buildApp() {
   });
   await app.register(websocket);
 
-  app.addHook("onClose", async () => { await database?.end(); });
+  // Mutations publish "changed" topics that connected websocket clients use to refetch.
+  // Local clients are notified synchronously so delivery never depends on the LISTEN
+  // connection being up; with a database the event also goes through pg_notify (tagged
+  // with this instance's id so the loopback copy is dropped) to reach clients of other
+  // API instances, alongside events the worker publishes the same way.
+  const hub = createEventHub();
+  const instanceId = randomBytes(8).toString("hex");
+  const stopListening = process.env.DATABASE_URL && database ? listenForEvents(process.env.DATABASE_URL, instanceId, hub.deliver) : undefined;
+  const publish = (topics: ChangedTopic[]) => {
+    hub.deliver(topics);
+    if (database) void database.query("SELECT pg_notify($1,$2)", [EVENT_CHANNEL, `${instanceId}|${topics.join(",")}`]).catch(() => undefined);
+  };
+  // Pending knocks used to expire lazily inside GET /api/requests on every poll; with
+  // clients idle on the websocket the server has to sweep on its own clock.
+  const requestExpirySweep = database ? setInterval(() => {
+    void database.query("UPDATE meeting_requests SET status='expired',responded_at=now() WHERE status='pending' AND created_at < now()-interval '2 minutes'")
+      .then((result) => { if (result.rowCount) publish(["requests"]); })
+      .catch(() => undefined);
+  }, 30_000) : undefined;
+
+  app.addHook("onClose", async () => {
+    if (requestExpirySweep) clearInterval(requestExpirySweep);
+    await stopListening?.();
+    await database?.end();
+  });
   app.get("/health", async () => ({ ok: true, service: "office-api", database: database ? "connected" : "demo" }));
 
   app.get("/api/auth/status", async (request) => {
@@ -83,6 +108,7 @@ export async function buildApp() {
     if (count.rows[0].count !== 0) return reply.code(409).send({ error: "Setup is already complete" });
     const result = await database.query("INSERT INTO users(email,password_hash,display_name,title,presence,is_admin) VALUES($1,$2,$3,'Administrator','available',true) RETURNING id", [input.email.toLowerCase(), await hashPassword(input.password), input.displayName]);
     await createSession(database, result.rows[0].id, reply);
+    publish(["people"]);
     return reply.code(201).send({ ok: true });
   });
 
@@ -94,13 +120,14 @@ export async function buildApp() {
     if (!row || !await verifyPassword(input.password, row.password_hash)) return reply.code(401).send({ error: "Invalid email or password" });
     await database.query("UPDATE users SET presence='available' WHERE id=$1", [row.id]);
     await createSession(database, row.id, reply);
+    publish(["people"]);
     return { ok: true };
   });
 
   app.post("/api/auth/logout", async (request, reply) => {
     if (database) {
       const user = await currentUser(database, request);
-      if (user) await database.query("UPDATE users SET presence='offline' WHERE id=$1", [user.id]);
+      if (user) { await database.query("UPDATE users SET presence='offline' WHERE id=$1", [user.id]); publish(["people"]); }
       await destroySession(database, request, reply);
     }
     return { ok: true };
@@ -131,6 +158,7 @@ export async function buildApp() {
       }
       await client.query("DELETE FROM users WHERE id=$1", [request.params.userId]);
       await client.query("COMMIT");
+      publish(["people", "requests"]);
       return reply.code(204).send();
     } catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
@@ -141,11 +169,13 @@ export async function buildApp() {
     if (!database) {
       const person = people.find((item) => item.id === "maya");
       if (person) person.presence = presence;
+      publish(["people"]);
       return { presence };
     }
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     await database.query("UPDATE users SET presence=$1 WHERE id=$2", [presence, user.id]);
+    publish(["people"]);
     return { presence };
   });
   app.post("/api/users", async (request, reply) => {
@@ -155,6 +185,7 @@ export async function buildApp() {
     const input = z.object({ email: z.string().email(), displayName: z.string().min(2).max(80), title: z.string().max(80).default(""), temporaryPassword: z.string().min(10) }).parse(request.body);
     try {
       const result = await database.query("INSERT INTO users(email,password_hash,display_name,title,presence,is_admin) VALUES($1,$2,$3,$4,'offline',false) RETURNING id", [input.email.toLowerCase(), await hashPassword(input.temporaryPassword), input.displayName, input.title]);
+      publish(["people"]);
       return reply.code(201).send({ id: result.rows[0].id });
     } catch (error) {
       if ((error as { code?: string }).code === "23505") return reply.code(409).send({ error: "An account with that email already exists" });
@@ -224,6 +255,7 @@ export async function buildApp() {
       await client.query("UPDATE invitations SET accepted_at=now() WHERE id=$1", [invitation.id]);
       await client.query("COMMIT");
       await createSession(database, created.rows[0].id, reply);
+      publish(["people"]);
       return reply.code(201).send({ ok: true });
     } catch (error) {
       await client.query("ROLLBACK");
@@ -246,12 +278,14 @@ export async function buildApp() {
       const meetingIndex = meetings.findIndex((meeting) => meeting.id === request.params.meetingId);
       if (meetingIndex === -1) return reply.code(404).send({ error: "Meeting note not found" });
       meetings.splice(meetingIndex, 1);
+      publish(["meetings", "actionItems"]);
       return reply.code(204).send();
     }
     const user = await currentUser(database, request);
     if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
     const result = await database.query("DELETE FROM meetings WHERE id=$1 RETURNING id", [request.params.meetingId]);
     if (!result.rowCount) return reply.code(404).send({ error: "Meeting note not found" });
+    publish(["meetings", "actionItems"]);
     return reply.code(204).send();
   });
   app.get("/api/action-items/mine", async (request, reply) => {
@@ -280,6 +314,7 @@ export async function buildApp() {
     if (input.status === "accepted" && !existing.rows[0].assignee_id) { values.push(user.id); fields.push(`assignee_id=$${values.length}`); }
     values.push(request.params.actionItemId);
     const updated = await database.query(`UPDATE action_items SET ${fields.join(",")} WHERE id=$${values.length} RETURNING id`, values);
+    publish(["actionItems", "meetings"]);
     return { id: updated.rows[0].id };
   });
   app.get("/api/requests", async (request, reply) => {
@@ -306,6 +341,7 @@ export async function buildApp() {
       const pending = await database.query("SELECT 1 FROM meeting_requests WHERE status='pending' AND ((sender_id=$1 AND recipient_id=$2) OR (sender_id=$2 AND recipient_id=$1))", [user.id, input.toId]);
       if (pending.rowCount) return reply.code(409).send({ error: "There is already a knock between these offices" });
       const result = await database.query("INSERT INTO meeting_requests(sender_id,recipient_id,message) VALUES($1,$2,$3) RETURNING id,status,created_at", [user.id, input.toId, input.message ?? null]);
+      publish(["requests"]);
       return reply.code(201).send({ request: { ...result.rows[0], from: user, toId: input.toId } });
     }
     const from = people.find((person) => person.id === input.fromId);
@@ -316,6 +352,7 @@ export async function buildApp() {
       createdAt: new Date().toISOString(), status: "pending"
     };
     requests.push(meetingRequest);
+    publish(["requests"]);
     return reply.code(201).send({ request: meetingRequest });
   });
 
@@ -331,25 +368,28 @@ export async function buildApp() {
     if (!allowed) return reply.code(403).send({ error: "You cannot respond to this request" });
     if (input.status !== "accepted") {
       await database.query("UPDATE meeting_requests SET status=$1,responded_at=now() WHERE id=$2", [input.status, request.params.requestId]);
+      publish(["requests"]);
       return { status: input.status };
     }
     const roomName = `meeting-${request.params.requestId}`;
     const meeting = await database.query("INSERT INTO meetings(signalwire_room_name,title,is_private,office_owner_id,status,started_at) VALUES($1,$2,true,$3,'waiting',now()) RETURNING id", [roomName, `${row.recipient_name}’s Office`, row.recipient_id]);
     await database.query("INSERT INTO meeting_participants(meeting_id,user_id) VALUES($1,$2),($1,$3)", [meeting.rows[0].id, row.sender_id, row.recipient_id]);
     await database.query("UPDATE meeting_requests SET status='accepted',responded_at=now(),meeting_id=$1 WHERE id=$2", [meeting.rows[0].id, request.params.requestId]);
+    publish(["requests", "meetings"]);
     return { status: input.status, meetingId: meeting.rows[0].id };
   });
 
   app.delete<{ Params: { requestId: string } }>("/api/requests/:requestId", async (request, reply) => {
     if (!database) {
       const index = requests.findIndex((item) => item.id === request.params.requestId);
-      if (index >= 0) requests.splice(index, 1);
+      if (index >= 0) { requests.splice(index, 1); publish(["requests"]); }
       return reply.code(204).send();
     }
     const user = await currentUser(database, request);
     if (!user) return reply.code(401).send({ error: "Authentication required" });
     const result = await database.query("DELETE FROM meeting_requests WHERE id=$1 AND (sender_id=$2 OR recipient_id=$2) RETURNING id", [request.params.requestId, user.id]);
     if (!result.rowCount) return reply.code(404).send({ error: "Meeting request not found" });
+    publish(["requests"]);
     return reply.code(204).send();
   });
 
@@ -379,6 +419,7 @@ export async function buildApp() {
         await database.query("UPDATE meeting_participants SET joined_at=now(),left_at=NULL WHERE meeting_id=$1 AND user_id=$2", [trackedMeetingId, authenticated.id]);
       }
       await database.query("UPDATE meetings SET status='active',started_at=coalesce(started_at,now()),ended_at=NULL WHERE id=$1", [trackedMeetingId]);
+      publish(["people", "meetings"]);
     }
     const uid = authenticated?.id ?? `guest-${randomBytes(12).toString("hex")}`;
     const expiresInSeconds = 60 * 60;
@@ -396,6 +437,7 @@ export async function buildApp() {
       const current = await database.query("SELECT recording_status FROM meetings WHERE id=$1", [request.params.meetingId]);
       return { status: current.rows[0]?.recording_status ?? "unavailable" };
     }
+    publish(["meetings"]);
     return { status: "queued" };
   });
 
@@ -410,11 +452,16 @@ export async function buildApp() {
       await database.query("UPDATE meetings SET status='processing',ended_at=now() WHERE id=$1", [request.params.meetingId]);
       await database.query("DELETE FROM meeting_requests WHERE meeting_id=$1", [request.params.meetingId]);
     }
+    publish(["people", "meetings", "requests"]);
     return { ok: true };
   });
 
-  app.get("/api/presence", { websocket: true }, (socket) => {
-    socket.send(JSON.stringify({ type: "presence.snapshot", people }));
+  app.get("/api/events", { websocket: true }, async (socket, request) => {
+    const origin = request.headers.origin;
+    const allowedOrigin = (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, "");
+    if (origin && origin !== allowedOrigin && origin !== `${request.protocol}://${request.headers.host}`) return socket.close(4403, "Origin not allowed");
+    if (database && !await currentUser(database, request)) return socket.close(4401, "Authentication required");
+    hub.add(socket);
   });
 
   return app;

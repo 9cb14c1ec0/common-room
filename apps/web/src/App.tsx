@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Trash2, Users, Video, VideoOff, X } from "lucide-react";
-import type { ActionItem, MeetingSummary, Person } from "@office/contracts";
+import type { ActionItem, ChangedTopic, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
 const configuredApiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
@@ -67,6 +67,8 @@ export function App() {
   const [editingAction, setEditingAction] = useState<{ id: string; description: string; dueAt: string }>();
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => window.commonRoomDesktop ? "granted" : typeof Notification === "undefined" ? "denied" : Notification.permission);
   const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
+  const noteSearchRef = useRef(noteSearch);
+  noteSearchRef.current = noteSearch;
 
   useEffect(() => {
     if (inviteToken) void fetch(`${apiUrl}/api/invitations/${encodeURIComponent(inviteToken)}`).then(async (response) => { if (!response.ok) throw new Error((await response.json()).error); setInvitation(await response.json()); }).catch((error) => setAuthError(error.message));
@@ -83,30 +85,67 @@ export function App() {
   useEffect(() => {
     if (!auth?.user || inviteToken) return;
     let active = true;
-    const refreshRealtime = async (announce: boolean) => {
+    let socket: WebSocket | undefined;
+    let socketOpen = false;
+    let reconnectDelay = 1000;
+    let reconnectTimer: number | undefined;
+    // Overlapping refreshes must not let a slow, older response overwrite a newer one:
+    // each call claims a generation per topic it fetches, and a result is applied only
+    // if no newer refresh has started fetching that topic since.
+    const refreshGenerations: Record<ChangedTopic, number> = { people: 0, requests: 0, meetings: 0, actionItems: 0 };
+    const refreshRealtime = async (announce: boolean, topics?: ChangedTopic[]) => {
+      const wants = (topic: ChangedTopic) => !topics || topics.includes(topic);
+      const generation = new Map((["people", "requests", "meetings", "actionItems"] as ChangedTopic[]).filter(wants).map((topic) => [topic, ++refreshGenerations[topic]]));
+      const current = (topic: ChangedTopic) => refreshGenerations[topic] === generation.get(topic);
       try {
         const options = { credentials: "include" as const };
-        const [peopleResponse, requestsResponse, meetingsResponse, actionsResponse] = await Promise.all([fetch(`${apiUrl}/api/people`, options), fetch(`${apiUrl}/api/requests`, options), fetch(`${apiUrl}/api/meetings${noteSearch ? `?q=${encodeURIComponent(noteSearch)}` : ""}`, options), fetch(`${apiUrl}/api/action-items/mine`, options)]);
+        const [peopleResponse, requestsResponse, meetingsResponse, actionsResponse] = await Promise.all([
+          generation.has("people") ? fetch(`${apiUrl}/api/people`, options) : undefined,
+          generation.has("requests") ? fetch(`${apiUrl}/api/requests`, options) : undefined,
+          generation.has("meetings") ? fetch(`${apiUrl}/api/meetings${noteSearchRef.current ? `?q=${encodeURIComponent(noteSearchRef.current)}` : ""}`, options) : undefined,
+          generation.has("actionItems") ? fetch(`${apiUrl}/api/action-items/mine`, options) : undefined
+        ]);
         if (!active) return;
-        if (peopleResponse.ok) setPeople((await peopleResponse.json()).people);
-        if (meetingsResponse.ok) setMeetings((await meetingsResponse.json()).meetings);
-        if (actionsResponse.ok) setMyActionItems((await actionsResponse.json()).actionItems);
-        if (requestsResponse.ok) {
+        if (peopleResponse?.ok) { const nextPeople = (await peopleResponse.json()).people; if (current("people")) setPeople(nextPeople); }
+        if (meetingsResponse?.ok) { const nextMeetings = (await meetingsResponse.json()).meetings; if (current("meetings")) setMeetings(nextMeetings); }
+        if (actionsResponse?.ok) { const nextActionItems = (await actionsResponse.json()).actionItems; if (current("actionItems")) setMyActionItems(nextActionItems); }
+        if (requestsResponse?.ok) {
           const nextRequests: RequestView[] = (await requestsResponse.json()).requests;
-          if (announce) for (const item of nextRequests) {
-            const previous = knownRequestStatesRef.current.get(item.id);
-            if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); void showSystemNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
-            if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); void showSystemNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
+          if (current("requests")) {
+            if (announce) for (const item of nextRequests) {
+              const previous = knownRequestStatesRef.current.get(item.id);
+              if (!previous && item.direction === "incoming" && item.status === "pending") { showToast(`${item.senderName} is knocking`); void showSystemNotification("Knock at the door", `${item.senderName} is at your office door`, `request-${item.id}`); }
+              if (previous === "pending" && item.direction === "outgoing" && item.status === "accepted") { showToast(`${item.recipientName} let you in`); void showSystemNotification("Come in", `${item.recipientName} let you into their office`, `accepted-${item.id}`); if (item.meetingId) void enterRoom(item.meetingId); }
+            }
+            knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
+            setRequests(nextRequests);
           }
-          knownRequestStatesRef.current = new Map(nextRequests.map((item) => [item.id, item.status]));
-          setRequests(nextRequests);
         }
       } catch { /* keep the current snapshot and retry */ }
     };
+    const connect = () => {
+      socket = new WebSocket(`${(apiUrl || window.location.origin).replace(/^http/, "ws")}/api/events`);
+      socket.onopen = () => { socketOpen = true; reconnectDelay = 1000; void refreshRealtime(true); };
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data));
+          if (message.type === "changed") void refreshRealtime(true, message.topics);
+        } catch { /* ignore malformed events */ }
+      };
+      socket.onclose = () => {
+        socketOpen = false;
+        if (!active) return;
+        reconnectTimer = window.setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 15_000);
+      };
+    };
     void refreshRealtime(false);
-    const interval = window.setInterval(() => void refreshRealtime(true), 4000);
-    return () => { active = false; window.clearInterval(interval); };
-  }, [auth?.user?.id, inviteToken, noteSearch]);
+    connect();
+    // Polling is only the fallback for when the websocket is unavailable (for example
+    // behind a static-site rewrite that cannot proxy upgrades).
+    const interval = window.setInterval(() => { if (!socketOpen) void refreshRealtime(true); }, 4000);
+    return () => { active = false; window.clearInterval(interval); window.clearTimeout(reconnectTimer); socket?.close(); };
+  }, [auth?.user?.id, inviteToken]);
 
   useEffect(() => {
     if (!auth?.user || view !== "notes") return;

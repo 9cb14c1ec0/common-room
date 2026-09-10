@@ -10,6 +10,8 @@ const recorderJar = process.env.AGORA_RECORDER_JAR ?? "/opt/agora/agora-example.
 const emptyRoomGraceMs = Number(process.env.EMPTY_ROOM_GRACE_MS ?? 10_000);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined, max: 3 }) : undefined;
 const recorders = new Map<string, { child: ChildProcessWithoutNullStreams; recordingPath: string; stopping: boolean; remoteUsers: Set<string>; sawParticipant: boolean; emptySince?: number; logBuffer: string }>();
+// Tells API instances (LISTEN office_events) that data changed so websocket clients refetch.
+const notifyClients = (topics: string) => void pool?.query("SELECT pg_notify('office_events',$1)", [topics]).catch(() => undefined);
 let processingTranscript = false;
 let processingSummary = false;
 
@@ -84,12 +86,14 @@ async function startNextRecording() {
     child.once("error", (error) => void failRecording(meeting.id, error));
     child.once("close", (code) => void finishRecording(meeting.id, recordingPath, code));
     await pool.query("UPDATE meetings SET recording_status='recording',recording_url=$1 WHERE id=$2", [recordingPath, meeting.id]);
+    notifyClients("meetings");
   } catch (error) { await failRecording(meeting.id, error); }
 }
 
 async function failRecording(meetingId: string, error: unknown) {
   recorders.delete(meetingId);
   await pool?.query("UPDATE meetings SET recording_status='failed',processing_error=$1 WHERE id=$2", [error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000), meetingId]);
+  notifyClients("meetings");
   console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Local recording failed", meetingId, error: error instanceof Error ? error.message : String(error) }));
 }
 
@@ -110,6 +114,7 @@ async function finishRecording(meetingId: string, recordingPath: string, code: n
     const file = await stat(actualRecordingPath);
     if (code !== 0 || file.size === 0) throw new Error(`Recorder exited with code ${code} and ${file.size} bytes`);
     await pool?.query("UPDATE meetings SET recording_status='recorded',recording_url=$1,next_processing_at=now(),processing_error=NULL WHERE id=$2", [actualRecordingPath, meetingId]);
+    notifyClients("meetings");
     console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Recording ready for transcription", meetingId, recordingPath: actualRecordingPath, bytes: file.size }));
   } catch (error) { await failRecording(meetingId, error); }
 }
@@ -130,6 +135,7 @@ async function stopEmptyRooms() {
     recorder.stopping = true;
     await pool.query("UPDATE meetings SET status='processing',ended_at=coalesce(ended_at,now()) WHERE id=$1 AND status='active'", [meetingId]);
     await pool.query("DELETE FROM meeting_requests WHERE meeting_id=$1", [meetingId]);
+    notifyClients("people,meetings,requests");
     recorder.child.stdin.write("1\n");
     console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Finalizing recording after the room became empty", meetingId }));
   }
@@ -200,6 +206,7 @@ async function processNextTranscript() {
     const text = transcriptText(transcript);
     if (!text) throw new Error("ElevenLabs returned a successful response but no transcript text; the recording was retained for retry");
     await pool.query("UPDATE meetings SET transcript=$1,recording_status='transcribed',processing_error=NULL WHERE id=$2", [JSON.stringify(transcript), meeting.id]);
+    notifyClients("meetings");
     await rm(meeting.recording_url, { force: true });
     await rm(path.join(recordingRoot, `${meeting.id}.json`), { force: true });
     console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting transcribed and recording deleted", meetingId: meeting.id, transcriptCharacters: text.length, transcriptWords: text.split(/\s+/).length, keyTermCount: keyterms.length }));
@@ -207,6 +214,7 @@ async function processNextTranscript() {
     if (meeting) {
       const attempts = meeting.transcription_attempts + 1;
       await pool.query("UPDATE meetings SET recording_status=$1,transcription_attempts=$2,next_processing_at=now()+($3::text || ' minutes')::interval,processing_error=$4 WHERE id=$5", [attempts >= 5 ? "failed" : "recorded", attempts, Math.min(60, 2 ** attempts), error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000), meeting.id]);
+      notifyClients("meetings");
       if (attempts >= 5) await rm(meeting.recording_url, { force: true });
     }
     console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Meeting transcription failed", meetingId: meeting?.id, error: error instanceof Error ? error.message : String(error) }));
@@ -273,11 +281,13 @@ async function processNextSummary() {
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
+    notifyClients("meetings,actionItems");
     console.log(JSON.stringify({ level: "info", service: "office-worker", message: "Meeting summarized", meetingId: meeting.id, actionItemCount: analysis.actionItems.length }));
   } catch (error) {
     if (meeting) {
       const attempts = meeting.transcription_attempts + 1;
       await pool.query("UPDATE meetings SET recording_status=$1,transcription_attempts=$2,next_processing_at=now()+($3::text || ' minutes')::interval,processing_error=$4,status=CASE WHEN $1::text='failed' THEN 'failed' ELSE status END WHERE id=$5", [attempts >= 5 ? "failed" : "transcribed", attempts, Math.min(60, 2 ** attempts), error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000), meeting.id]);
+      notifyClients("meetings");
     }
     console.error(JSON.stringify({ level: "error", service: "office-worker", message: "Meeting analysis failed", meetingId: meeting?.id, error: error instanceof Error ? error.message : String(error) }));
   } finally { processingSummary = false; }
