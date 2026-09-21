@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Trash2, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Shield, Trash2, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, ChangedTopic, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
@@ -64,6 +64,7 @@ export function App() {
   const [myActionItems, setMyActionItems] = useState<ActionItem[]>([]);
   const [noteSearch, setNoteSearch] = useState("");
   const [deletingMeetingId, setDeletingMeetingId] = useState<string>();
+  const [updatingAdminId, setUpdatingAdminId] = useState<string>();
   const [editingAction, setEditingAction] = useState<{ id: string; description: string; dueAt: string }>();
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => window.commonRoomDesktop ? "granted" : typeof Notification === "undefined" ? "denied" : Notification.permission);
   const knownRequestStatesRef = useRef<Map<string, string>>(new Map());
@@ -129,7 +130,10 @@ export function App() {
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(String(event.data));
-          if (message.type === "changed") void refreshRealtime(true, message.topics);
+          if (message.type === "changed") {
+            void refreshRealtime(true, message.topics);
+            if ((message.topics as ChangedTopic[]).includes("people")) void refreshAccessStatus();
+          }
         } catch { /* ignore malformed events */ }
       };
       socket.onclose = () => {
@@ -159,6 +163,10 @@ export function App() {
   }, [view, auth?.user?.id]);
 
   useEffect(() => {
+    if (view === "admin" && auth?.user && !auth.user.isAdmin) setView("office");
+  }, [view, auth?.user?.isAdmin]);
+
+  useEffect(() => {
     if (view !== "room" || !navigator.mediaDevices?.enumerateDevices) return;
     const refresh = () => void refreshMediaDevices();
     refresh();
@@ -184,6 +192,13 @@ export function App() {
       setAuth(status);
       if (status.user) await loadOfficeData(status.user.id);
     } catch { setAuthError("The Common Room API is unavailable. Check the web service API URL."); }
+  }
+
+  async function refreshAccessStatus() {
+    const response = await fetch(`${apiUrl}/api/auth/status`, { credentials: "include" }).catch(() => undefined);
+    if (!response?.ok) return;
+    const status: AuthStatus = await response.json();
+    setAuth(status);
   }
 
   async function loadOfficeData(currentUserId = auth?.user?.id) {
@@ -281,6 +296,16 @@ export function App() {
     if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to delete the user"); return; }
     showToast(`${person.name} was deleted`);
     await loadOfficeData();
+  }
+
+  async function setAdministrator(person: Person, isAdmin: boolean) {
+    setUpdatingAdminId(person.id);
+    try {
+      const response = await fetch(`${apiUrl}/api/users/${person.id}/admin`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ isAdmin }) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to update administrator access"); return; }
+      setPeople((current) => current.map((item) => item.id === person.id ? { ...item, isAdmin } : item));
+      showToast(isAdmin ? `${person.name} is now an administrator` : `${person.name} is no longer an administrator`);
+    } finally { setUpdatingAdminId(undefined); }
   }
 
   async function deleteMeetingNote(meeting: MeetingSummary) {
@@ -800,11 +825,11 @@ export function App() {
       {view === "admin" && <section className="panel-list admin-panel">
         <section className="admin-section">
           <div className="admin-section-heading"><div><p className="eyebrow">ACCESS</p><h3>Team members</h3></div><span>{people.length} {people.length === 1 ? "member" : "members"}</span></div>
-          <p className="admin-section-description">Manage who can access this workspace. Deleting a user ends their active sessions while preserving existing meeting notes.</p>
+          <p className="admin-section-description">Manage who can access this workspace and grant administrator access. Deleting a user ends their active sessions while preserving existing meeting notes.</p>
           <div className="admin-user-list">{people.map((person, index) => <div className="admin-user-row" key={person.id}>
             <div className={`avatar tone-${index}`}>{person.initials}</div>
             <div className="admin-user-copy"><strong>{person.name}{person.id === auth.user?.id ? " (you)" : ""}</strong><small>{person.title || "No description"}{person.isAdmin ? " · Administrator" : ""}</small></div>
-            {person.id !== auth.user?.id ? <button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete user</button> : <span className="current-user-label">Current user</span>}
+            {person.id !== auth.user?.id ? <div className="admin-user-actions"><button className="admin-role-button" disabled={updatingAdminId === person.id} onClick={() => void setAdministrator(person, !person.isAdmin)} title={`${person.isAdmin ? "Remove" : "Grant"} administrator access for ${person.name}`}><Shield size={14} /> {updatingAdminId === person.id ? "Saving…" : person.isAdmin ? "Remove admin" : "Make admin"}</button><button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete user</button></div> : <span className="current-user-label">Current user</span>}
           </div>)}</div>
         </section>
         <section className="admin-section">

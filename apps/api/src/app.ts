@@ -163,6 +163,17 @@ export async function buildApp() {
     } catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
   });
+  app.patch<{ Params: { userId: string } }>("/api/users/:userId/admin", async (request, reply) => {
+    if (!database) return reply.code(400).send({ error: "Database is not configured" });
+    const user = await currentUser(database, request);
+    if (!user?.isAdmin) return reply.code(403).send({ error: "Administrator access required" });
+    if (request.params.userId === user.id) return reply.code(409).send({ error: "You cannot change your own administrator access" });
+    const input = z.object({ isAdmin: z.boolean() }).parse(request.body);
+    const result = await database.query("UPDATE users SET is_admin=$1 WHERE id=$2 RETURNING id,is_admin", [input.isAdmin, request.params.userId]);
+    if (!result.rowCount) return reply.code(404).send({ error: "User not found" });
+    publish(["people"]);
+    return { id: result.rows[0].id, isAdmin: result.rows[0].is_admin };
+  });
   app.patch("/api/presence", async (request, reply) => {
     const input = z.union([z.object({ doorOpen: z.boolean() }), z.object({ status: z.enum(["available", "busy", "do_not_disturb"]) })]).parse(request.body);
     const presence = "doorOpen" in input ? input.doorOpen ? "available" : "do_not_disturb" : input.status;
