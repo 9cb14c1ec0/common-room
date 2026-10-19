@@ -1,12 +1,13 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { avatarUrl } from "./avatars.js";
 import type { Database } from "./database.js";
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = "common_room_session";
 
-export interface AuthUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
+export interface AuthUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean; avatarUrl?: string }
 
 export async function hashPassword(password: string) {
   const salt = randomBytes(16);
@@ -44,9 +45,9 @@ export async function createSession(database: Database, userId: string, reply: F
 export async function currentUser(database: Database, request: FastifyRequest): Promise<AuthUser | undefined> {
   const token = request.cookies[COOKIE];
   if (!token) return undefined;
-  const result = await database.query(`SELECT u.id, u.email, u.display_name, u.title, u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=$1 AND s.expires_at > now()`, [digest(token)]);
+  const result = await database.query(`SELECT u.id, u.email, u.display_name, u.title, u.is_admin, u.avatar_updated_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=$1 AND s.expires_at > now()`, [digest(token)]);
   const row = result.rows[0];
-  return row && { id: row.id, email: row.email, displayName: row.display_name, title: row.title, isAdmin: row.is_admin };
+  return row && { id: row.id, email: row.email, displayName: row.display_name, title: row.title, isAdmin: row.is_admin, avatarUrl: avatarUrl(row.id, row.avatar_updated_at) };
 }
 
 export async function destroySession(database: Database, request: FastifyRequest, reply: FastifyReply) {

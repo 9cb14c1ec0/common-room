@@ -85,3 +85,40 @@ test("CORS preflight permits the key term settings write", async () => {
   assert.match(response.headers["access-control-allow-methods"] ?? "", /PUT/);
   await app.close();
 });
+
+test("a user can upload, view, and remove their avatar", async () => {
+  const app = await buildApp();
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest of the image")]);
+  const upload = await app.inject({ method: "PUT", url: "/api/me/avatar", headers: { "content-type": "image/png" }, payload: png });
+  assert.equal(upload.statusCode, 200);
+  const { avatarUrl } = upload.json();
+  assert.match(avatarUrl, /^\/api\/users\/maya\/avatar\?v=\d+$/);
+
+  const directory = await app.inject({ method: "GET", url: "/api/people" });
+  assert.equal(directory.json().people.find((person: { id: string }) => person.id === "maya").avatarUrl, avatarUrl);
+  const status = await app.inject({ method: "GET", url: "/api/auth/status" });
+  assert.equal(status.json().user.avatarUrl, avatarUrl);
+
+  const image = await app.inject({ method: "GET", url: avatarUrl });
+  assert.equal(image.statusCode, 200);
+  assert.equal(image.headers["content-type"], "image/png");
+  assert.deepEqual(image.rawPayload, png);
+
+  const removal = await app.inject({ method: "DELETE", url: "/api/me/avatar" });
+  assert.equal(removal.statusCode, 204);
+  assert.equal((await app.inject({ method: "GET", url: avatarUrl })).statusCode, 404);
+  const after = await app.inject({ method: "GET", url: "/api/people" });
+  assert.equal(after.json().people.find((person: { id: string }) => person.id === "maya").avatarUrl, undefined);
+  await app.close();
+});
+
+test("avatar uploads must be a real raster image within the size limit", async () => {
+  const app = await buildApp();
+  const disguised = await app.inject({ method: "PUT", url: "/api/me/avatar", headers: { "content-type": "image/png" }, payload: Buffer.from("<svg xmlns=\"http://www.w3.org/2000/svg\"/>") });
+  assert.equal(disguised.statusCode, 415);
+  const svg = await app.inject({ method: "PUT", url: "/api/me/avatar", headers: { "content-type": "image/svg+xml" }, payload: "<svg/>" });
+  assert.equal(svg.statusCode, 415);
+  const oversized = await app.inject({ method: "PUT", url: "/api/me/avatar", headers: { "content-type": "image/jpeg" }, payload: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(600 * 1024)]) });
+  assert.equal(oversized.statusCode, 413);
+  await app.close();
+});

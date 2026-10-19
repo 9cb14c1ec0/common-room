@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ArrowLeft, ArrowUpRight, Bell, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Shield, Trash2, Users, Video, VideoOff, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bell, Camera, Check, DoorClosed, DoorOpen, History, ListChecks, LogOut, Mic, MicOff, MonitorUp, Pencil, PhoneOff, Search, Settings, Shield, Trash2, Upload, Users, Video, VideoOff, X } from "lucide-react";
 import type { ActionItem, ChangedTopic, MeetingSummary, Person } from "@office/contracts";
 import type { IAgoraRTCClient, ICameraVideoTrack, ILocalVideoTrack, IMicrophoneAudioTrack } from "agora-rtc-sdk-ng";
 
@@ -9,10 +9,33 @@ const apiUrl = configuredApiUrl && configuredApiUrl !== window.location.origin
   ? configuredApiUrl
   : "";
 
-interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean }
+interface SessionUser { id: string; email: string; displayName: string; title: string; isAdmin: boolean; avatarUrl?: string }
 interface AuthStatus { mode: "demo" | "database"; requiresSetup?: boolean; user: SessionUser | null }
 interface RequestView { id: string; senderId: string; recipientId: string; senderName: string; recipientName: string; message?: string; status: string; meetingId?: string; direction: "incoming" | "outgoing" }
 interface RoomMember { id: string; name: string; audioMuted: boolean; videoMuted: boolean }
+
+const AVATAR_SIZE = 256;
+const initialsOf = (name: string) => name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase();
+
+// Shows the uploaded photo when there is one, falling back to initials if it is missing or fails to load.
+function Avatar({ name, url, className, children }: { name: string; url?: string; className: string; children?: React.ReactNode }) {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const showImage = url && failedUrl !== url;
+  return <div className={`${className}${showImage ? " has-image" : ""}`}>{showImage ? <img src={`${apiUrl}${url}`} alt="" onError={() => setFailedUrl(url)} /> : initialsOf(name)}{children}</div>;
+}
+
+// Center-crops to a square and downsizes before upload, keeping requests well under the API's limit.
+async function prepareAvatar(file: File) {
+  const bitmap = await createImageBitmap(file);
+  const side = Math.min(bitmap.width, bitmap.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = AVATAR_SIZE;
+  canvas.getContext("2d")?.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, AVATAR_SIZE, AVATAR_SIZE);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.88));
+  if (!blob) throw new Error("The image could not be encoded");
+  return blob;
+}
 
 export function App() {
   const [people, setPeople] = useState<Person[]>([]);
@@ -49,6 +72,10 @@ export function App() {
   const [displayName, setDisplayName] = useState("");
   const [authError, setAuthError] = useState<string>();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
   const [addingPerson, setAddingPerson] = useState(false);
   const [newPerson, setNewPerson] = useState({ email: "", title: "" });
   const [inviteUrl, setInviteUrl] = useState<string>();
@@ -167,6 +194,16 @@ export function App() {
   }, [view, auth?.user?.isAdmin]);
 
   useEffect(() => {
+    if (!profileMenuOpen) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent ? event.key === "Escape" : !profileMenuRef.current?.contains(event.target as Node)) setProfileMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", close); };
+  }, [profileMenuOpen]);
+
+  useEffect(() => {
     if (view !== "room" || !navigator.mediaDevices?.enumerateDevices) return;
     const refresh = () => void refreshMediaDevices();
     refresh();
@@ -275,6 +312,38 @@ export function App() {
     } finally {
       setLoggingOut(false);
     }
+  }
+
+  function applyAvatar(nextUrl: string | undefined) {
+    const userId = auth?.user?.id;
+    setAuth((current) => current?.user ? { ...current, user: { ...current.user, avatarUrl: nextUrl } } : current);
+    setPeople((current) => current.map((person) => person.id === userId ? { ...person, avatarUrl: nextUrl } : person));
+  }
+
+  async function uploadAvatar(file: File) {
+    setProfileMenuOpen(false);
+    setSavingAvatar(true);
+    try {
+      let image: Blob;
+      try { image = await prepareAvatar(file); } catch { showToast("That image could not be read. Try a PNG, JPEG, or WebP photo."); return; }
+      const response = await fetch(`${apiUrl}/api/me/avatar`, { method: "PUT", credentials: "include", headers: { "content-type": image.type }, body: image });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to update your photo"); return; }
+      applyAvatar((await response.json()).avatarUrl);
+      showToast("Profile photo updated");
+    } catch { showToast("Unable to update your photo"); }
+    finally { setSavingAvatar(false); }
+  }
+
+  async function removeAvatar() {
+    setProfileMenuOpen(false);
+    setSavingAvatar(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/me/avatar`, { method: "DELETE", credentials: "include" });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); showToast(body.error ?? "Unable to remove your photo"); return; }
+      applyAvatar(undefined);
+      showToast("Profile photo removed");
+    } catch { showToast("Unable to remove your photo"); }
+    finally { setSavingAvatar(false); }
   }
 
   async function invite(person: Person) {
@@ -755,6 +824,8 @@ export function App() {
     <div className="room-top"><button onClick={leaveRoom}><ArrowLeft size={18} /> Leave room</button><div><strong>{meetingTitle}</strong><small>{roomMode === "agora" ? "Connected" : roomMode === "loading" ? "Connecting…" : "Local device preview"}</small></div><span className="recording-pill">{roomMode === "agora" ? "Live" : "Preview"}</span></div>
     {(() => {
       const currentUserId = roomUidRef.current ?? auth.user.id;
+      const sessionUser = auth.user;
+      const memberAvatarUrl = (id: string) => id === sessionUser.id ? sessionUser.avatarUrl : people.find((person) => person.id === id)?.avatarUrl;
       const displayMembers = roomMembers.length ? roomMembers : [{ id: auth.user.id, name: auth.user.displayName, audioMuted: !micOn, videoMuted: !cameraOn }];
       const hasRoomVideo = cameraOn || screenSharing || roomMembers.some((member) => !member.videoMuted);
       return <div className={`video-stage ${hasRoomVideo ? "has-video" : "audio-only"}`}>
@@ -762,12 +833,12 @@ export function App() {
         {!hasRoomVideo && <div className="audio-participants">{displayMembers.map((member, index) => {
           const isSpeaking = !member.audioMuted && speakingMemberIds.includes(member.id);
           return <div className={`audio-participant${isSpeaking ? " speaking" : ""}`} key={member.id} aria-label={`${member.name}, ${member.audioMuted ? "muted" : isSpeaking ? "speaking" : "listening"}`}>
-            <div className={`avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div>
+            <Avatar className={`avatar tone-${index % 4}`} name={member.name} url={memberAvatarUrl(member.id)} />
             <strong>{member.name}</strong>
             <span className="audio-status">{member.audioMuted ? <><MicOff size={13}/> Muted</> : isSpeaking ? <><span className="voice-bars" aria-hidden="true"><i/><i/><i/></span> Speaking</> : <><Mic size={13}/> Listening</>}</span>
           </div>;
         })}</div>}
-        {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><span className={`mini-avatar tone-${index % 4}`}>{member.name.split(/\s+/).map((part) => part[0]).slice(0,2).join("")}</span><small>{member.name}</small></div>)}</div>}
+        {hasRoomVideo && <div className="participant-strip">{displayMembers.map((member, index) => <div key={member.id}><Avatar className={`mini-avatar tone-${index % 4}`} name={member.name} url={memberAvatarUrl(member.id)} /><small>{member.name}</small></div>)}</div>}
         {roomMode === "agora" && cameraOn && <div className="local-camera-preview" ref={agoraVideoRef} />}
         {roomMode === "agora" && screenSharing && <div className="local-screen-preview" ref={screenVideoRef} />}
         {roomMode === "local" && cameraOn && <video ref={videoRef} autoPlay muted playsInline />}
@@ -796,7 +867,11 @@ export function App() {
         <button className={view === "actions" ? "active" : ""} onClick={() => setView("actions")}><ListChecks size={18} /> My action items {myActionItems.filter((item) => item.status !== "complete").length > 0 && <span className="badge">{myActionItems.filter((item) => item.status !== "complete").length}</span>}</button>
         {auth.user.isAdmin && <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><Settings size={18} /> Admin</button>}
       </nav>
-      <div className="profile"><div className="avatar cream">{auth.user.displayName.split(/\s+/).map((part) => part[0]).slice(0,2).join("").toUpperCase()}</div><div className="profile-copy"><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div><button type="button" className="logout-button" onClick={() => void logout()} disabled={loggingOut} title="Log out" aria-label="Log out"><LogOut size={17} /></button></div>
+      <div className="profile" ref={profileMenuRef}>
+        <button type="button" className="avatar-button" onClick={() => setProfileMenuOpen(!profileMenuOpen)} disabled={savingAvatar} title="Change profile photo" aria-label="Change profile photo" aria-haspopup="menu" aria-expanded={profileMenuOpen}><Avatar className="avatar cream" name={auth.user.displayName} url={auth.user.avatarUrl}><span className="avatar-edit" aria-hidden="true"><Camera size={14} /></span></Avatar></button>
+        <input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadAvatar(file); }} />
+        {profileMenuOpen && <div className="profile-menu" role="menu"><button type="button" role="menuitem" onClick={() => avatarInputRef.current?.click()}><Upload size={15} /> {auth.user.avatarUrl ? "Change photo" : "Upload photo"}</button>{auth.user.avatarUrl && <button type="button" role="menuitem" onClick={() => void removeAvatar()}><Trash2 size={15} /> Remove photo</button>}</div>}
+        <div className="profile-copy"><strong>{auth.user.displayName}</strong><small><i className="dot available" /> Available</small></div><button type="button" className="logout-button" onClick={() => void logout()} disabled={loggingOut} title="Log out" aria-label="Log out"><LogOut size={17} /></button></div>
     </aside>
 
     <main>
@@ -811,7 +886,7 @@ export function App() {
         <div className="section-heading"><div><p className="eyebrow">THE TEAM</p><h3>Who’s around</h3></div><div className="heading-actions"><span>{people.filter((p) => p.presence === "available").length} available</span>{auth.user.isAdmin && <button onClick={() => setAddingPerson(!addingPerson)}>+ Add teammate</button>}</div></div>
         {addingPerson && <form className="add-person invite-form" onSubmit={(event) => void createInvite(event)}><input type="email" placeholder="Teammate email" value={newPerson.email} onChange={(event) => setNewPerson({...newPerson,email:event.target.value})} required /><input placeholder="Title (optional)" value={newPerson.title} onChange={(event) => setNewPerson({...newPerson,title:event.target.value})} /><button type="submit">Create invite link</button>{inviteUrl && <div className="invite-result"><input readOnly value={inviteUrl} /><button type="button" onClick={() => { void navigator.clipboard.writeText(inviteUrl); showToast("Invite link copied"); }}>Copy link</button></div>}</form>}
         <div className="people-grid">{people.length === 0 ? <div className="empty-state"><Users size={28} /><h3>No team members yet</h3><p>Invite management is the next account feature.</p></div> : people.map((person, index) => <article className="person-card" key={person.id}>
-          <div className={`avatar tone-${index}`}>{person.initials}<i className={`presence-ring ${person.presence}`} /></div>
+          <Avatar className={`avatar tone-${index % 4}`} name={person.name} url={person.avatarUrl}><i className={`presence-ring ${person.presence}`} /></Avatar>
           <div className="person-info"><strong>{person.name}</strong><small>{person.title}{person.isAdmin ? " · Administrator" : ""}</small>{person.location && <span className="person-location"><i className="dot busy" /> {person.location.label}{person.location.occupants.filter((name) => name !== person.name).length ? ` · with ${person.location.occupants.filter((name) => name !== person.name).join(", ")}` : ""}</span>}</div>
           <div className="person-actions"><button className="knock-button" disabled={(!requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") && person.presence !== "available") || person.id === auth.user?.id} onClick={() => { const knock = requests.find((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending"); if (knock) void respondToRequest(knock, "cancelled"); else void invite(person); }}>
             {requests.some((item) => item.direction === "outgoing" && item.recipientId === person.id && item.status === "pending") ? "Cancel knock" : sentTo === person.id ? "Knocking…" : person.presence === "available" ? "Knock on door" : person.presence === "busy" ? "In a meeting" : "Door closed"}
@@ -827,7 +902,7 @@ export function App() {
           <div className="admin-section-heading"><div><p className="eyebrow">ACCESS</p><h3>Team members</h3></div><span>{people.length} {people.length === 1 ? "member" : "members"}</span></div>
           <p className="admin-section-description">Manage who can access this workspace and grant administrator access. Deleting a user ends their active sessions while preserving existing meeting notes.</p>
           <div className="admin-user-list">{people.map((person, index) => <div className="admin-user-row" key={person.id}>
-            <div className={`avatar tone-${index}`}>{person.initials}</div>
+            <Avatar className={`avatar tone-${index % 4}`} name={person.name} url={person.avatarUrl} />
             <div className="admin-user-copy"><strong>{person.name}{person.id === auth.user?.id ? " (you)" : ""}</strong><small>{person.title || "No description"}{person.isAdmin ? " · Administrator" : ""}</small></div>
             {person.id !== auth.user?.id ? <div className="admin-user-actions"><button className="admin-role-button" disabled={updatingAdminId === person.id} onClick={() => void setAdministrator(person, !person.isAdmin)} title={`${person.isAdmin ? "Remove" : "Grant"} administrator access for ${person.name}`}><Shield size={14} /> {updatingAdminId === person.id ? "Saving…" : person.isAdmin ? "Remove admin" : "Make admin"}</button><button className="delete-user" onClick={() => void deleteUser(person)} title={`Delete ${person.name}`}><Trash2 size={14} /> Delete user</button></div> : <span className="current-user-label">Current user</span>}
           </div>)}</div>
