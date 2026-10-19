@@ -11,6 +11,7 @@ import { createSession, currentUser, destroySession, hashPassword, verifyPasswor
 import { createDatabase, migrate } from "./database.js";
 import { KEY_TERM_MAX_COUNT, keyTermProblem, normalizeKeyTerms } from "./keyTerms.js";
 import { createEventHub, listenForEvents, EVENT_CHANNEL } from "./events.js";
+import { AVATAR_CONTENT_TYPES, AVATAR_MAX_BYTES, avatarUrl, detectAvatarType } from "./avatars.js";
 
 const people: Person[] = [
   { id: "maya", name: "Maya Chen", initials: "MC", title: "Product", presence: "available", isAdmin: true },
@@ -46,6 +47,7 @@ const meetings: MeetingSummary[] = [{
 }];
 
 const requests: MeetingRequest[] = [];
+const demoAvatars = new Map<string, { image: Buffer; contentType: string }>();
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 export async function buildApp() {
@@ -66,6 +68,8 @@ export async function buildApp() {
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
   });
   await app.register(websocket);
+  // Avatars are uploaded as the raw image body; every other route keeps the JSON parser.
+  app.addContentTypeParser([...AVATAR_CONTENT_TYPES], { parseAs: "buffer", bodyLimit: AVATAR_MAX_BYTES }, (_request, body, done) => done(null, body));
 
   // Mutations publish "changed" topics that connected websocket clients use to refetch.
   // Local clients are notified synchronously so delivery never depends on the LISTEN
@@ -95,7 +99,7 @@ export async function buildApp() {
   app.get("/health", async () => ({ ok: true, service: "office-api", database: database ? "connected" : "demo" }));
 
   app.get("/api/auth/status", async (request) => {
-    if (!database) return { mode: "demo", user: { id: "maya", email: "maya@example.test", displayName: "Maya Chen", title: "Product", isAdmin: true } };
+    if (!database) return { mode: "demo", user: { id: "maya", email: "maya@example.test", displayName: "Maya Chen", title: "Product", isAdmin: true, avatarUrl: people.find((person) => person.id === "maya")?.avatarUrl } };
     const user = await currentUser(database, request);
     const result = await database.query("SELECT count(*)::int AS count FROM users");
     return { mode: "database", requiresSetup: result.rows[0].count === 0, user: user ?? null };
@@ -136,11 +140,57 @@ export async function buildApp() {
   app.get("/api/people", async (request, reply) => {
     if (!database) return { people };
     if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
-    const result = await database.query(`SELECT u.id,u.display_name,u.title,u.presence,u.is_admin,active_meeting.is_private,active_meeting.office_owner_id,owner.display_name office_owner_name,
+    const result = await database.query(`SELECT u.id,u.display_name,u.title,u.presence,u.is_admin,u.avatar_updated_at,active_meeting.is_private,active_meeting.office_owner_id,owner.display_name office_owner_name,
       coalesce((SELECT jsonb_agg(member.display_name ORDER BY member.display_name) FROM meeting_participants other_participant JOIN users member ON member.id=other_participant.user_id WHERE other_participant.meeting_id=active_meeting.id AND other_participant.joined_at IS NOT NULL AND other_participant.left_at IS NULL),'[]'::jsonb) occupants
       FROM users u LEFT JOIN LATERAL (SELECT m.id,m.is_private,m.office_owner_id FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.user_id=u.id AND p.joined_at IS NOT NULL AND p.left_at IS NULL AND m.status='active' ORDER BY m.started_at DESC LIMIT 1) active_meeting ON true
       LEFT JOIN users owner ON owner.id=active_meeting.office_owner_id ORDER BY u.display_name`);
-    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence, isAdmin: row.is_admin, location: row.is_private === null ? undefined : { kind: row.is_private ? "office" : "common_room", officeOwnerId: row.office_owner_id, label: row.is_private ? `${row.office_owner_name ?? "Private"}’s office` : "Common Room", occupants: row.occupants } })) };
+    return { people: result.rows.map((row) => ({ id: row.id, name: row.display_name, initials: row.display_name.split(/\s+/).map((part: string) => part[0]).slice(0,2).join("").toUpperCase(), title: row.title, presence: row.presence, isAdmin: row.is_admin, avatarUrl: avatarUrl(row.id, row.avatar_updated_at), location: row.is_private === null ? undefined : { kind: row.is_private ? "office" : "common_room", officeOwnerId: row.office_owner_id, label: row.is_private ? `${row.office_owner_name ?? "Private"}’s office` : "Common Room", occupants: row.occupants } })) };
+  });
+  app.get<{ Params: { userId: string } }>("/api/users/:userId/avatar", async (request, reply) => {
+    let avatar: { image: Buffer; contentType: string } | undefined;
+    if (!database) avatar = demoAvatars.get(request.params.userId);
+    else {
+      if (!await currentUser(database, request)) return reply.code(401).send({ error: "Authentication required" });
+      if (!z.string().uuid().safeParse(request.params.userId).success) return reply.code(404).send({ error: "Avatar not found" });
+      const result = await database.query("SELECT avatar_image,avatar_content_type FROM users WHERE id=$1 AND avatar_image IS NOT NULL", [request.params.userId]);
+      if (result.rowCount) avatar = { image: result.rows[0].avatar_image, contentType: result.rows[0].avatar_content_type };
+    }
+    if (!avatar) return reply.code(404).send({ error: "Avatar not found" });
+    // Avatar URLs are versioned per upload, so the bytes behind one never change. Helmet's
+    // same-origin resource policy would block the <img> when the web app calls the API host
+    // directly (CROSS_SITE_COOKIES); the response still requires a session either way.
+    return reply.header("cache-control", "private, max-age=31536000, immutable").header("cross-origin-resource-policy", "cross-origin").type(avatar.contentType).send(avatar.image);
+  });
+  app.put("/api/me/avatar", async (request, reply) => {
+    if (!Buffer.isBuffer(request.body)) return reply.code(415).send({ error: "Upload a PNG, JPEG, or WebP image" });
+    const contentType = detectAvatarType(request.body);
+    if (!contentType) return reply.code(415).send({ error: "Upload a PNG, JPEG, or WebP image" });
+    if (!database) {
+      const person = people.find((item) => item.id === "maya");
+      demoAvatars.set("maya", { image: request.body, contentType });
+      if (person) person.avatarUrl = avatarUrl("maya", new Date());
+      publish(["people"]);
+      return { avatarUrl: person?.avatarUrl };
+    }
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    const result = await database.query("UPDATE users SET avatar_image=$1,avatar_content_type=$2,avatar_updated_at=now() WHERE id=$3 RETURNING avatar_updated_at", [request.body, contentType, user.id]);
+    publish(["people"]);
+    return { avatarUrl: avatarUrl(user.id, result.rows[0].avatar_updated_at) };
+  });
+  app.delete("/api/me/avatar", async (request, reply) => {
+    if (!database) {
+      demoAvatars.delete("maya");
+      const person = people.find((item) => item.id === "maya");
+      if (person) delete person.avatarUrl;
+      publish(["people"]);
+      return reply.code(204).send();
+    }
+    const user = await currentUser(database, request);
+    if (!user) return reply.code(401).send({ error: "Authentication required" });
+    await database.query("UPDATE users SET avatar_image=NULL,avatar_content_type=NULL,avatar_updated_at=NULL WHERE id=$1", [user.id]);
+    publish(["people"]);
+    return reply.code(204).send();
   });
   app.delete<{ Params: { userId: string } }>("/api/users/:userId", async (request, reply) => {
     if (!database) return reply.code(400).send({ error: "Database is not configured" });

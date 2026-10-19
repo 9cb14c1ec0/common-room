@@ -14,6 +14,8 @@ export interface Person {
   title: string;
   presence: Presence;
   isAdmin?: boolean;
+  /** API path of the uploaded profile photo; absent when the person shows initials. */
+  avatarUrl?: string;
   location?: {
     kind: "office" | "common_room";
     officeOwnerId: string | null;
