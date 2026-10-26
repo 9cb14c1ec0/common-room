@@ -173,9 +173,19 @@ export function App() {
     void refreshRealtime(false);
     connect();
     // Polling is only the fallback for when the websocket is unavailable (for example
-    // behind a static-site rewrite that cannot proxy upgrades).
-    const interval = window.setInterval(() => { if (!socketOpen) void refreshRealtime(true); }, 4000);
-    return () => { active = false; window.clearInterval(interval); window.clearTimeout(reconnectTimer); socket?.close(); };
+    // behind a static-site rewrite that cannot proxy upgrades). Knocks are checked every
+    // tick, even in a background tab, so notifications still arrive; everything else
+    // refreshes less often and only while the tab is visible.
+    let pollTick = 0;
+    const interval = window.setInterval(() => {
+      if (socketOpen) return;
+      pollTick += 1;
+      const full = document.visibilityState === "visible" && pollTick % 3 === 0;
+      void refreshRealtime(true, full ? undefined : ["requests"]);
+    }, 10_000);
+    const handleVisibility = () => { if (!socketOpen && document.visibilityState === "visible") { pollTick = 0; void refreshRealtime(true); } };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => { active = false; window.clearInterval(interval); document.removeEventListener("visibilitychange", handleVisibility); window.clearTimeout(reconnectTimer); socket?.close(); };
   }, [auth?.user?.id, inviteToken]);
 
   useEffect(() => {
