@@ -7,3 +7,4 @@ npm-debug.log*
 apps/desktop/release
 deploy/.env
 docs
+**/*.dump

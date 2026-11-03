@@ -38,7 +38,23 @@ if ! docker compose exec -T db pg_restore --no-owner --no-acl --exit-on-error --
   exit 1
 fi
 
+# If the swap fails or is interrupted, finish it when the drop already happened (the
+# replacement was confirmed), and restart the services either way.
+swapped=false
+recover() {
+  $swapped && return
+  echo "Swapping in the imported database failed." >&2
+  if [ -z "$(psql -At -c "SELECT 1 FROM pg_database WHERE datname='common_room'")" ]; then
+    psql -c "ALTER DATABASE common_room_import RENAME TO common_room" >&2 || echo "Rename common_room_import to common_room by hand." >&2
+  fi
+  docker compose up -d api worker
+}
+trap recover EXIT
+
 docker compose stop api worker
-psql -c "DROP DATABASE common_room WITH (FORCE)" -c "ALTER DATABASE common_room_import RENAME TO common_room"
+psql -c "DROP DATABASE common_room WITH (FORCE)"
+psql -c "ALTER DATABASE common_room_import RENAME TO common_room"
+swapped=true
+trap - EXIT
 docker compose up -d api worker
 echo "Imported $archive."
