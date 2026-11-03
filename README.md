@@ -29,7 +29,7 @@ This repository is an npm workspace containing:
 - `apps/desktop` — Electron desktop client with a workspace-URL onboarding flow
 - `packages/contracts` — shared client/server types
 - `db` — PostgreSQL schema and migrations
-- `render.yaml` — portable Render Blueprint
+- `deploy` — Docker Compose and Caddy configuration for a single-VM deployment
 
 The web client calls the public API. The API and worker share PostgreSQL. The API mints short-lived Agora channel tokens, while the worker joins active channels as an audio-only recorder. Recordings exist only in the worker's ephemeral `/tmp` storage until successfully transcribed, then they are deleted.
 
@@ -40,89 +40,70 @@ A complete production deployment requires:
 1. An Agora project with App Certificate authentication enabled. Copy its App ID and App Certificate.
 2. An ElevenLabs API key with access to Speech to Text.
 3. An OpenRouter API key with access to the model configured by `OPENROUTER_MODEL`.
-4. A Render account connected to the Git repository.
+4. A Linux VM with a public IP address and a DNS name pointing at it (see [VM requirements](#vm-requirements)).
 
 The application does not require S3, Redis, or a separate object-storage service.
 
-## Deploy to Render with the Blueprint
+## Deploy to a VM
 
-The Blueprint creates a static web application, Node API, Docker background worker, and PostgreSQL database.
+The whole stack runs on one Linux VM with Docker Compose. `deploy/compose.yaml` starts four containers:
 
-1. Fork or clone this repository into your Git provider.
-2. In Render, choose **New → Blueprint** and select the repository.
-3. Apply `render.yaml` and allow Render to create all four resources.
-4. Enter the secret values requested during initial Blueprint creation. If Render creates the services before asking for URL values, finish creating them and set the two URL variables in the service dashboards afterward.
-5. Configure the environment variables below, save them, and redeploy affected services.
+- `web` — Caddy serving the built web app and proxying `/api` (websockets included) and `/health` to the API. It obtains and renews the HTTPS certificate automatically.
+- `api` — the Fastify API
+- `worker` — the recording, transcription, and analysis worker
+- `db` — PostgreSQL 17, stored in the `pgdata` Docker volume
 
-### Web static site
+Only Caddy is published, on ports 80 and 443. The API, worker, and database are reachable only on the Compose network.
 
-The static site proxies `/api` to the API service through the rewrite in `render.yaml`, so the browser
-only ever talks to one origin and the session cookie stays first-party. Confirm the rewrite
-destination matches the hostname Render assigned the API service:
+### VM requirements
 
-```yaml
-- type: rewrite
-  source: /api/*
-  destination: https://common-room-api.onrender.com/api/*
+- **x86_64 (amd64).** The Agora recorder only ships x86_64 native libraries, so ARM VMs such as AWS Graviton or Ampere won't run the worker.
+- At least 2 vCPU, 4 GB RAM, and 20 GB of disk. The worker's first image build compiles the recorder with Maven and needs the memory.
+- Any Linux that runs Docker Engine with the Compose plugin, such as Ubuntu 24.04 or Debian 12
+- Inbound TCP 80 and 443, plus UDP 443 for HTTP/3. Port 80 has to stay open for certificate issuance and renewal.
+- A DNS name whose A (and optionally AAAA) record points at the VM. Browsers only allow microphone and camera access over HTTPS, so calls won't work on a bare IP address. If you don't have a domain, use `<ip-with-dashes>.sslip.io` (for example `203-0-113-5.sslip.io`).
+
+### Install
+
+On a fresh Ubuntu or Debian VM:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"   # then log out and back in
+
+git clone <your repository URL> common-room
+cd common-room/deploy
+cp .env.example .env
 ```
 
-Edit it in `render.yaml` and re-sync the Blueprint (or edit the redirect/rewrite rule in the static
-site's dashboard) if the hostname differs. Leave `VITE_API_URL` empty so the bundle uses relative
-`/api` paths. Setting it to an absolute URL makes the browser call the API host directly, which
-needs the cross-site cookie mode described below.
-
-### API web service
-
-Set:
+Edit `deploy/.env`:
 
 ```text
-WEB_ORIGIN=https://<your-web-hostname>
+DOMAIN=office.example.com
+POSTGRES_PASSWORD=<openssl rand -hex 32>
+SESSION_SECRET=<openssl rand -hex 32>
 AGORA_APP_ID=<your Agora App ID>
 AGORA_APP_CERTIFICATE=<your Agora App Certificate>
-```
-
-Use the static site's public HTTPS URL for `WEB_ORIGIN`, with no trailing slash. It must exactly match the browser origin because authenticated requests use cookies and credentialed CORS.
-
-If you bypass the rewrite and point `VITE_API_URL` straight at the API hostname, the session cookie
-becomes third-party. Also set `CROSS_SITE_COOKIES=true` on the API in that case, which switches the
-cookie to `SameSite=None; Secure; Partitioned`. Without it browsers that block third-party cookies
-reject the cookie and sign-in silently fails.
-
-The Blueprint supplies `DATABASE_URL` from PostgreSQL and generates `SESSION_SECRET`. Do not copy either value into source control.
-
-### Background worker
-
-Set:
-
-```text
-AGORA_APP_ID=<the same Agora App ID used by the API>
-AGORA_APP_CERTIFICATE=<the same Agora App Certificate used by the API>
 ELEVENLABS_API_KEY=<your ElevenLabs API key>
 OPENROUTER_API_KEY=<your OpenRouter API key>
 ```
 
-The Blueprint also configures:
+Use `openssl rand -hex 32` for the database password. It ends up inside a connection URL, and characters such as `@`, `/`, or `#` would break that URL. `WEB_ORIGIN` is derived from `DOMAIN` as `https://<DOMAIN>`, so it doesn't need setting.
 
-```text
-OPENROUTER_MODEL=openai/gpt-5.6-luna
-EMPTY_ROOM_GRACE_MS=10000
+Build and start:
+
+```bash
+docker compose up -d --build
+docker compose logs -f
 ```
 
-The worker image builds the pinned Agora Linux Recording Java SDK using JDK 17. Its first Docker build can take several minutes while Maven downloads and compiles the recorder.
+The first build takes several minutes while the worker image downloads and compiles the pinned Agora Linux Recording Java SDK using JDK 17.
 
 ### Create the first administrator
 
-After the web and API deployments are healthy, visit the web URL. If the database contains no users, the application displays **Create the first account**. That first account becomes an administrator and can invite or delete other users.
+Once the stack is up, visit `https://<DOMAIN>`. If the database contains no users, the application displays **Create the first account**. That first account becomes an administrator and can invite or delete other users.
 
-Alternatively, set these variables on the API before its first successful start:
-
-```text
-BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-BOOTSTRAP_ADMIN_PASSWORD=<a password of at least 10 characters>
-BOOTSTRAP_ADMIN_NAME=Administrator
-```
-
-The bootstrap variables are only used when the `users` table is empty. Remove the password variable after the account is created.
+Alternatively, set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` (at least 10 characters), and `BOOTSTRAP_ADMIN_NAME` in `deploy/.env` before the first start. They're only used when the `users` table is empty. Remove the password afterward and run `docker compose up -d` again.
 
 ### Transcription key terms
 
@@ -138,18 +119,62 @@ No separate migration command is required. At API startup, Common Room creates t
 
 ### Verify the deployment
 
-1. Open `https://<your-api-hostname>/health`. It should report `ok: true` and `database: "connected"`.
-2. Open the web site, create the first administrator, and sign in.
+1. Open `https://<DOMAIN>/health`. It should report `ok: true` and `database: "connected"`.
+2. Create the first administrator and sign in.
 3. Invite a second test user and sign in from another browser profile.
 4. Join the Common Room from both profiles and confirm two-way audio.
-5. Leave the room and watch the worker logs for recording finalization, transcription, and analysis.
+5. Leave the room and watch `docker compose logs -f worker` for recording finalization, transcription, and analysis.
 6. Confirm that the completed session appears in meeting-note search with its summary and action items.
 
-If the site loads but API actions fail, check the `/api/*` rewrite destination and `WEB_ORIGIN` first. If sign-in appears to succeed but every later request is unauthenticated, the browser is rejecting the session cookie: confirm requests go to `/api` on the web origin rather than to the API hostname, or set `CROSS_SITE_COOKIES=true`. If calls report that calling is not configured, confirm the Agora values are present on both the API and worker. If calls work but notes never appear, inspect the worker logs and confirm the ElevenLabs and OpenRouter keys.
+If the site doesn't load, check `docker compose logs web`. Caddy logs certificate errors there, which usually mean DNS doesn't point at the VM yet or port 80 is blocked. If calls report that calling is not configured, confirm the Agora values in `deploy/.env` and run `docker compose up -d` again. If calls work but notes never appear, inspect the worker logs and confirm the ElevenLabs and OpenRouter keys.
 
-## Custom domains
+### Update
 
-Custom domains work without code changes. Point the domain at the static site, set `WEB_ORIGIN` to that domain, and leave the `/api/*` rewrite pointing at the API service hostname. Keep the URL on HTTPS and omit trailing slashes.
+```bash
+cd common-room
+git pull
+cd deploy
+docker compose up -d --build
+```
+
+Restarting the worker during a live call loses that call's recording, so update between meetings.
+
+### Back up and restore
+
+All persistent state lives in PostgreSQL, including profile photos, so a database archive is a complete backup. From the `deploy` directory:
+
+```bash
+./db-export.sh > common-room-$(date +%F).dump
+./db-import.sh common-room-YYYY-MM-DD.dump
+```
+
+`db-import.sh` replaces everything in the VM database and asks you to type `replace` first (`--yes` skips the prompt). It restores into a scratch database and swaps that in only after the restore succeeds, so a corrupt or incomplete archive leaves the current data untouched. The API and worker are stopped for the swap and restarted afterward. On restart the API applies any migrations the archive is missing, so archives from older versions import cleanly.
+
+Copy archives off the VM. A snapshot of the VM disk also captures the `pgdata` volume.
+
+### Move from Render
+
+`db-export.sh` also accepts a connection URL, so the VM can pull the data straight from the Render database.
+
+1. Deploy the VM as described above and confirm `https://<DOMAIN>/health` responds. Don't create any accounts, because the import replaces them.
+2. In the Render dashboard, open the database's **Connect** menu and copy the **External Database URL**. If the database's access control restricts inbound IPs, add the VM's IP address.
+3. Suspend the Render API and worker services so nothing changes during the copy. Users can't use the old instance from here on.
+4. On the VM, from the `deploy` directory:
+
+   ```bash
+   ./db-export.sh 'postgresql://common_room:<password>@<host>.render.com/common_room' > render.dump
+   ./db-import.sh render.dump
+   ```
+
+5. Sign in at `https://<DOMAIN>` with an existing account and check that users, meeting notes, and action items are present. Everyone must sign in again, because session cookies belong to the old hostname.
+6. Copy `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, `ELEVENLABS_API_KEY`, and `OPENROUTER_API_KEY` from the Render services into `deploy/.env` if you haven't yet, then run `docker compose up -d`.
+7. Once you're satisfied, delete the Render services and database. Keep `render.dump` as a backup.
+
+The export uses `pg_dump` from the `db` container (PostgreSQL 17) and refuses a newer source server. If the Render database is newer, raise the `postgres` image tag in `compose.yaml` before the first start. For PostgreSQL 18 and later images, also change the `pgdata` mount to `/var/lib/postgresql`.
+
+### Using a managed database
+
+To use a hosted PostgreSQL instead of the `db` container, remove the `db` service and its `depends_on` entries from `deploy/compose.yaml`. Then set `DATABASE_URL` on the `api` and `worker` services to the provider's connection string and set `DATABASE_SSL` to `"true"`.
 
 ## Local development
 
@@ -190,11 +215,14 @@ GitHub Actions workflow `.github/workflows/desktop.yml` type-checks and tests th
 
 | Variable | Service | Required | Purpose |
 | --- | --- | --- | --- |
+| `DOMAIN` | Caddy | VM | Public hostname; Caddy issues its certificate and `WEB_ORIGIN` is derived from it |
+| `POSTGRES_PASSWORD` | Database | VM | Password for the bundled PostgreSQL container |
 | `VITE_API_URL` | Web | Optional | Absolute API URL; leave empty to call `/api` on the web origin. Embedded at build time |
 | `WEB_ORIGIN` | API | Production | Exact allowed web origin and invitation-link origin |
 | `CROSS_SITE_COOKIES` | API | Only without the proxy | `true` sends the session cookie as `SameSite=None; Secure; Partitioned` |
-| `DATABASE_URL` | API, worker | Production | PostgreSQL connection string; supplied by Render |
-| `SESSION_SECRET` | API | Production | Session signing secret; generated by Render |
+| `DATABASE_URL` | API, worker | Production | PostgreSQL connection string; set by `deploy/compose.yaml` |
+| `DATABASE_SSL` | API, worker | No | `true` connects to PostgreSQL over TLS; defaults to `true` when `NODE_ENV=production`. Compose sets `false` for the bundled database |
+| `SESSION_SECRET` | API | Production | Session signing secret; generate with `openssl rand -hex 32` |
 | `AGORA_APP_ID` | API, worker | For calls | Agora project identifier |
 | `AGORA_APP_CERTIFICATE` | API, worker | For calls | Agora token-signing secret |
 | `ELEVENLABS_API_KEY` | Worker | For transcription | ElevenLabs Speech-to-Text credential; key terms are configured in the app, not here |
@@ -207,8 +235,8 @@ GitHub Actions workflow `.github/workflows/desktop.yml` type-checks and tests th
 | `BOOTSTRAP_ADMIN_EMAIL` | API | No | Creates the initial admin when paired with a password |
 | `BOOTSTRAP_ADMIN_PASSWORD` | API | No | Initial admin password; remove after bootstrap |
 | `BOOTSTRAP_ADMIN_NAME` | API | No | Initial administrator display name |
-| `PORT` | API | No | HTTP port; defaults to 4000 locally and is assigned by Render |
-| `NODE_ENV` | API, worker | No | Enables production cookies and PostgreSQL TLS behavior |
+| `PORT` | API | No | HTTP port; defaults to 4000 |
+| `NODE_ENV` | API, worker | No | Enables secure cookies and the default PostgreSQL TLS behavior |
 
 Never expose `AGORA_APP_CERTIFICATE`, `ELEVENLABS_API_KEY`, `OPENROUTER_API_KEY`, `SESSION_SECRET`, or `DATABASE_URL` to the browser or commit them to Git.
 

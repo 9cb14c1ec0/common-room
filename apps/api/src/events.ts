@@ -1,5 +1,6 @@
 import pg from "pg";
 import type { ChangedTopic } from "@office/contracts";
+import { databaseSsl } from "./database.js";
 
 export const EVENT_CHANNEL = "office_events";
 
@@ -40,7 +41,7 @@ export function listenForEvents(connectionString: string, ownOrigin: string, del
       scheduled = true;
       retry = setTimeout(connect, 1000);
     };
-    client = new pg.Client({ connectionString, ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined });
+    client = new pg.Client({ connectionString, ssl: databaseSsl() });
     client.on("notification", (message) => {
       if (!message.payload) return;
       const separator = message.payload.indexOf("|");

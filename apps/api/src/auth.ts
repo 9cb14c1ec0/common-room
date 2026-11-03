@@ -25,8 +25,8 @@ export async function verifyPassword(password: string, encoded: string) {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
-// The web app reaches the API under its own origin (Vite proxies /api in development, the Render
-// static site rewrites it in production), so the session cookie is first-party and SameSite=Lax.
+// The web app reaches the API under its own origin (Vite proxies /api in development, Caddy proxies it
+// on the VM), so the session cookie is first-party and SameSite=Lax.
 // Set CROSS_SITE_COOKIES=true when the browser calls the API host directly instead: that needs
 // SameSite=None plus Partitioned (CHIPS), or browsers blocking third-party cookies reject it.
 export const sessionCookieOptions = () => {

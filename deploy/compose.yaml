@@ -1,0 +1,86 @@
+# Single-VM deployment: Caddy (web + TLS), API, recording worker, and PostgreSQL.
+# Run from this directory after creating .env from .env.example:
+#   docker compose up -d --build
+name: common-room
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: common_room
+      POSTGRES_USER: common_room
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U common_room -d common_room"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      WEB_ORIGIN: https://${DOMAIN:?set DOMAIN in deploy/.env}
+      DATABASE_URL: postgresql://common_room:${POSTGRES_PASSWORD}@db:5432/common_room
+      DATABASE_SSL: "false"
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in deploy/.env}
+      AGORA_APP_ID: ${AGORA_APP_ID:-}
+      AGORA_APP_CERTIFICATE: ${AGORA_APP_CERTIFICATE:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrator}
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    # The Agora recorder ships x86_64 native libraries only.
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://common_room:${POSTGRES_PASSWORD}@db:5432/common_room
+      DATABASE_SSL: "false"
+      AGORA_APP_ID: ${AGORA_APP_ID:-}
+      AGORA_APP_CERTIFICATE: ${AGORA_APP_CERTIFICATE:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-5.6-luna}
+      EMPTY_ROOM_GRACE_MS: ${EMPTY_ROOM_GRACE_MS:-10000}
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

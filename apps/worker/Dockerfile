@@ -1,7 +1,8 @@
 FROM node:24-bookworm AS node-build
 WORKDIR /app
 COPY . .
-RUN npm ci --include=dev && npm run build -w @office/worker
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+RUN npm ci --include=dev -w @office/worker && npm run build -w @office/worker
 
 FROM maven:3.9-eclipse-temurin-17 AS recorder-build
 ARG AGORA_RECORDER_COMMIT=26dc261d29aac98ee954857666fa7e877d79c249

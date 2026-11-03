@@ -8,7 +8,7 @@ const intervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000);
 const recordingRoot = process.env.RECORDING_TEMP_DIR ?? "/tmp/common-room-recordings";
 const recorderJar = process.env.AGORA_RECORDER_JAR ?? "/opt/agora/agora-example.jar";
 const emptyRoomGraceMs = Number(process.env.EMPTY_ROOM_GRACE_MS ?? 10_000);
-const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined, max: 3 }) : undefined;
+const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: (process.env.DATABASE_SSL ?? (process.env.NODE_ENV === "production" ? "true" : "false")) === "true" ? { rejectUnauthorized: false } : undefined, max: 3 }) : undefined;
 const recorders = new Map<string, { child: ChildProcessWithoutNullStreams; recordingPath: string; stopping: boolean; remoteUsers: Set<string>; sawParticipant: boolean; emptySince?: number; logBuffer: string }>();
 // Tells API instances (LISTEN office_events) that data changed so websocket clients refetch.
 const notifyClients = (topics: string) => void pool?.query("SELECT pg_notify('office_events',$1)", [topics]).catch(() => undefined);
