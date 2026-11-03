@@ -6,11 +6,18 @@ import pg from "pg";
 const { Pool } = pg;
 export type Database = pg.Pool;
 
+// Hosted databases need TLS; a Postgres container on the same VM does not offer it. DATABASE_SSL
+// overrides the default of TLS in production only.
+export function databaseSsl() {
+  const setting = process.env.DATABASE_SSL ?? (process.env.NODE_ENV === "production" ? "true" : "false");
+  return setting === "true" ? { rejectUnauthorized: false } : undefined;
+}
+
 export function createDatabase(): Database | undefined {
   if (!process.env.DATABASE_URL) return undefined;
   return new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
+    ssl: databaseSsl(),
     max: 10
   });
 }
