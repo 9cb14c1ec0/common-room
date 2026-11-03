@@ -8,7 +8,6 @@
 # succeeds, so a bad archive leaves the current data untouched. The API and worker are stopped
 # during the swap. On restart the API applies any migrations the archive is missing.
 set -euo pipefail
-cd "$(dirname "$0")"
 
 confirm=true
 if [ "${1:-}" = "--yes" ]; then confirm=false; shift; fi
@@ -16,7 +15,9 @@ if [ $# -ne 1 ] || [ ! -r "$1" ]; then
   echo "Usage: $0 [--yes] <archive.dump>" >&2
   exit 1
 fi
-archive=$1
+# Resolve the archive before moving into this directory so relative paths keep working.
+archive=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+cd "$(dirname "$0")"
 
 if $confirm; then
   read -r -p "This replaces ALL data in the VM database with $archive. Type 'replace' to continue: " answer
